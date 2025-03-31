@@ -1,76 +1,122 @@
-import os
 import logging
-from telegram import Update, Document
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-from openai import OpenAI
-from docx import Document as DocxDocument
+import os
+import tempfile
+from telegram import Update, InputFile
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+from docx import Document
 import pdfplumber
+from openai import OpenAI
+from PIL import Image, ImageDraw, ImageFont
 
-# === ЛОГГИРОВАНИЕ ===
+# Настройка логгера
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === ИНИЦИАЛИЗАЦИЯ OpenAI ===
+# Загрузка шрифта
+FONT_PATH = "TT Travels Next Trial Bold.ttf"  # Убедись, что он лежит рядом
+FONT_SIZE = 72
+
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-# === ОБРАБОТКА ДОКУМЕНТА ===
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file: Document = update.message.document
-    file_name = file.file_name
+    file = update.message.document
+    file_name = file.file_name.lower()
 
-    if not file_name.lower().endswith(('.pdf', '.docx')):
-        await update.message.reply_text("Пожалуйста, отправь файл в формате .docx или .pdf.")
-        return
+    with tempfile.NamedTemporaryFile(delete=False) as tf:
+        new_file = await context.bot.get_file(file.file_id)
+        await new_file.download_to_drive(custom_path=tf.name)
 
-    file_path = await file.get_file()
-    file_data = await file_path.download_as_bytearray()
+        # Определяем формат
+        if file_name.endswith(".docx"):
+            text = extract_text_from_docx(tf.name)
+        elif file_name.endswith(".pdf"):
+            text = extract_text_from_pdf(tf.name)
+        else:
+            await update.message.reply_text("Пожалуйста, отправьте .docx или .pdf файл.")
+            return
+
+    logger.info("Файл получен. Обращаемся к GPT...")
 
     try:
-        if file_name.endswith(".pdf"):
-            text = extract_text_from_pdf(file_data)
-        else:
-            text = extract_text_from_docx(file_data)
-
-        await update.message.reply_text("Генерирую идеи на основе брифа... 💡")
-
-        # Запрос к OpenAI (новый синтаксис)
         response = client.chat.completions.create(
-            model="gpt-4-turbo",
+            model="gpt-4-1106-preview",
             messages=[
-                {"role": "system", "content": "Ты креативный ассистент, который генерирует маркетинговые идеи на основе брифа."},
-                {"role": "user", "content": text}
-            ],
-            temperature=0.8,
-            max_tokens=1000
+                {"role": "system", "content": "Ты дизайнер. Сформулируй фразу в стиле слогана по тексту."},
+                {"role": "user", "content": text[:2000]}
+            ]
         )
-
-        ideas = response.choices[0].message.content
-        await update.message.reply_text(ideas)
-
+        slogan = response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error("Ошибка обработки файла или GPT: %s", e)
-        await update.message.reply_text("Произошла ошибка при обработке. Попробуй ещё раз позже.")
+        logger.error(f"Ошибка GPT: {e}")
+        await update.message.reply_text("Ошибка при обращении к GPT.")
+        return
 
-# === EXTRACT DOCX ===
-def extract_text_from_docx(file_data: bytearray) -> str:
-    from io import BytesIO
-    doc = DocxDocument(BytesIO(file_data))
-    return "\n".join([p.text for p in doc.paragraphs if p.text.strip() != ""])
+    logger.info(f"GPT ответ: {slogan}")
 
-# === EXTRACT PDF ===
-def extract_text_from_pdf(file_data: bytearray) -> str:
-    from io import BytesIO
-    with pdfplumber.open(BytesIO(file_data)) as pdf:
-        return "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+    image_path = generate_image_with_text(slogan)
 
-# === START БОТА ===
+    with open(image_path, "rb") as img_file:
+        await update.message.reply_photo(photo=InputFile(img_file), caption="Ваш слоган 👆")
+
+def extract_text_from_docx(path):
+    doc = Document(path)
+    return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+
+def extract_text_from_pdf(path):
+    text = ""
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+    return text
+
+def generate_image_with_text(text):
+    width, height = 1080, 1080
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+
+    # Центровка
+    lines = []
+    words = text.split()
+    line = ""
+    for word in words:
+        if draw.textlength(line + " " + word, font=font) < width - 100:
+            line += " " + word
+        else:
+            lines.append(line.strip())
+            line = word
+    lines.append(line.strip())
+
+    y = (height - len(lines) * (FONT_SIZE + 20)) // 2
+    for line in lines:
+        line_width = draw.textlength(line, font=font)
+        x = (width - line_width) // 2
+        draw.text((x, y), line, fill="black", font=font)
+        y += FONT_SIZE + 20
+
+    path = os.path.join(tempfile.gettempdir(), "output.jpg")
+    image.save(path, "JPEG")
+    return path
+
 if __name__ == "__main__":
-    TOKEN = os.environ["BOT_TOKEN"]
+    import asyncio
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    async def run_bot():
+        TOKEN = os.environ["BOT_TOKEN"]
+        app = ApplicationBuilder().token(TOKEN).build()
 
-    doc_handler = MessageHandler(filters.Document.ALL, handle_document)
-    app.add_handler(doc_handler)
+        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-    logger.info("Бот запущен.")
-    app.run_polling()
+        logger.info("Бот запускается...")
+
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+
+    asyncio.run(run_bot())
