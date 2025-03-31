@@ -1,55 +1,78 @@
 import os
 import logging
 from telegram import Update, Document
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 import openai
 import docx
+import pdfplumber
 from fpdf import FPDF
 
-# === Настройка ===
-logging.basicConfig(level=logging.INFO)
+# === Загрузка переменных из Render (через os.environ) ===
+TOKEN = os.environ.get("TOKEN")
+openai.api_key = os.environ.get("OPENAI_API_KEY")
+
+# === Константы ===
+FONT_PATH = "TT Travels Next Trial Bold.ttf"
+OUTPUT_PDF = "ideas_output.pdf"
+
+# === Логгирование ===
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# Подгружаем переменные окружения
-TOKEN = os.getenv("TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-openai.api_key = OPENAI_API_KEY
-
-FONT_PATH = "TT Travels Next Trial Bold.ttf"
-OUTPUT_PDF = "ideas.pdf"
-
-# === Обработчики ===
-
+# === Команда /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Отправь .docx файл и напиши /brief")
+    await update.message.reply_text(
+        "Привет! Отправь .docx или .pdf файл и напиши /brief для генерации идей"
+    )
 
+# === Обработка загрузки документа ===
 async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = update.message.document
-    if file.mime_type != "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        await update.message.reply_text("Отправьте .docx файл, пожалуйста.")
+    file: Document = update.message.document
+    file_path = await file.get_file()
+
+    file_ext = file.file_name.lower().split('.')[-1]
+    if file_ext not in ["docx", "pdf"]:
+        await update.message.reply_text("Поддерживаются только .docx и .pdf файлы.")
         return
 
-    file_path = await file.get_file()
-    file_name = "brief.docx"
-    await file_path.download_to_drive(file_name)
+    local_filename = f"brief.{file_ext}"
+    await file_path.download_to_drive(local_filename)
 
-    context.user_data["brief_path"] = file_name
+    context.user_data["brief_path"] = local_filename
+    context.user_data["brief_type"] = file_ext
+
     await update.message.reply_text("Файл получен. Напишите /brief для генерации идей.")
 
+# === Генерация идей на основе брифа ===
 async def generate_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "brief_path" not in context.user_data:
-        await update.message.reply_text("Сначала загрузите .docx файл.")
+        await update.message.reply_text("Сначала отправьте файл .docx или .pdf.")
         return
+
+    path = context.user_data["brief_path"]
+    ext = context.user_data["brief_type"]
 
     await update.message.reply_text("Извлекаю текст из брифа...")
 
     try:
-        doc = docx.Document(context.user_data["brief_path"])
-        full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        if ext == "docx":
+            doc = docx.Document(path)
+            full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        elif ext == "pdf":
+            with pdfplumber.open(path) as pdf:
+                full_text = "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
+        else:
+            full_text = ""
     except Exception as e:
-        logger.error(f"Ошибка чтения документа: {e}")
-        await update.message.reply_text("Не удалось прочитать документ.")
+        logger.error(f"Ошибка чтения файла: {e}")
+        await update.message.reply_text("Не удалось извлечь текст.")
+        return
+
+    if not full_text.strip():
+        await update.message.reply_text("Файл пустой или не удалось извлечь текст.")
         return
 
     await update.message.reply_text("Генерирую идеи через GPT...")
@@ -86,14 +109,12 @@ async def generate_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка генерации PDF: {e}")
         await update.message.reply_text(f"Ошибка PDF: {e}")
 
-# === Запуск ===
-
+# === Основной запуск ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("brief", generate_brief))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_doc))
+    app.add_handler(CommandHandler("brief", generate_brief))
 
-    logger.info("Бот запущен...")
     app.run_polling()
