@@ -1,120 +1,76 @@
 import os
 import logging
 from telegram import Update, Document
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
-from dotenv import load_dotenv
-import openai
-import docx
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from openai import OpenAI
+from docx import Document as DocxDocument
 import pdfplumber
-from fpdf import FPDF
 
-# === Загрузка переменных из Render (через os.environ) ===
-TOKEN = os.environ.get("TOKEN")
-openai.api_key = os.environ.get("OPENAI_API_KEY")
-
-# === Константы ===
-FONT_PATH = "TT Travels Next Trial Bold.ttf"
-OUTPUT_PDF = "ideas_output.pdf"
-
-# === Логгирование ===
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+# === ЛОГГИРОВАНИЕ ===
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === Команда /start ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привет! Отправь .docx или .pdf файл и напиши /brief для генерации идей"
-    )
+# === ИНИЦИАЛИЗАЦИЯ OpenAI ===
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-# === Обработка загрузки документа ===
-async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# === ОБРАБОТКА ДОКУМЕНТА ===
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file: Document = update.message.document
+    file_name = file.file_name
+
+    if not file_name.lower().endswith(('.pdf', '.docx')):
+        await update.message.reply_text("Пожалуйста, отправь файл в формате .docx или .pdf.")
+        return
+
     file_path = await file.get_file()
-
-    file_ext = file.file_name.lower().split('.')[-1]
-    if file_ext not in ["docx", "pdf"]:
-        await update.message.reply_text("Поддерживаются только .docx и .pdf файлы.")
-        return
-
-    local_filename = f"brief.{file_ext}"
-    await file_path.download_to_drive(local_filename)
-
-    context.user_data["brief_path"] = local_filename
-    context.user_data["brief_type"] = file_ext
-
-    await update.message.reply_text("Файл получен. Напишите /brief для генерации идей.")
-
-# === Генерация идей на основе брифа ===
-async def generate_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "brief_path" not in context.user_data:
-        await update.message.reply_text("Сначала отправьте файл .docx или .pdf.")
-        return
-
-    path = context.user_data["brief_path"]
-    ext = context.user_data["brief_type"]
-
-    await update.message.reply_text("Извлекаю текст из брифа...")
+    file_data = await file_path.download_as_bytearray()
 
     try:
-        if ext == "docx":
-            doc = docx.Document(path)
-            full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-        elif ext == "pdf":
-            with pdfplumber.open(path) as pdf:
-                full_text = "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
+        if file_name.endswith(".pdf"):
+            text = extract_text_from_pdf(file_data)
         else:
-            full_text = ""
-    except Exception as e:
-        logger.error(f"Ошибка чтения файла: {e}")
-        await update.message.reply_text("Не удалось извлечь текст.")
-        return
+            text = extract_text_from_docx(file_data)
 
-    if not full_text.strip():
-        await update.message.reply_text("Файл пустой или не удалось извлечь текст.")
-        return
+        await update.message.reply_text("Генерирую идеи на основе брифа... 💡")
 
-    await update.message.reply_text("Генерирую идеи через GPT...")
-
-    try:
-        prompt = f"Вот бриф:\n\n{full_text}\n\nСгенерируй 5 креативных идей на основе этого брифа."
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
+        # Запрос к OpenAI (новый синтаксис)
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[
+                {"role": "system", "content": "Ты креативный ассистент, который генерирует маркетинговые идеи на основе брифа."},
+                {"role": "user", "content": text}
+            ],
             temperature=0.8,
-            max_tokens=800,
+            max_tokens=1000
         )
-        ideas = response.choices[0].message.content.strip()
+
+        ideas = response.choices[0].message.content
+        await update.message.reply_text(ideas)
+
     except Exception as e:
-        logger.error(f"Ошибка GPT: {e}")
-        await update.message.reply_text("Ошибка при генерации идей.")
-        return
+        logger.error("Ошибка обработки файла или GPT: %s", e)
+        await update.message.reply_text("Произошла ошибка при обработке. Попробуй ещё раз позже.")
 
-    await update.message.reply_text("Формирую PDF...")
+# === EXTRACT DOCX ===
+def extract_text_from_docx(file_data: bytearray) -> str:
+    from io import BytesIO
+    doc = DocxDocument(BytesIO(file_data))
+    return "\n".join([p.text for p in doc.paragraphs if p.text.strip() != ""])
 
-    try:
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.add_font("CustomFont", "", FONT_PATH, uni=True)
-        pdf.set_font("CustomFont", size=12)
+# === EXTRACT PDF ===
+def extract_text_from_pdf(file_data: bytearray) -> str:
+    from io import BytesIO
+    with pdfplumber.open(BytesIO(file_data)) as pdf:
+        return "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
 
-        for line in ideas.split("\n"):
-            pdf.multi_cell(0, 10, line)
-
-        pdf.output(OUTPUT_PDF)
-        with open(OUTPUT_PDF, "rb") as f:
-            await update.message.reply_document(document=f, filename=OUTPUT_PDF)
-    except Exception as e:
-        logger.error(f"Ошибка генерации PDF: {e}")
-        await update.message.reply_text(f"Ошибка PDF: {e}")
-
-# === Основной запуск ===
+# === START БОТА ===
 if __name__ == "__main__":
+    TOKEN = os.environ["BOT_TOKEN"]
+
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_doc))
-    app.add_handler(CommandHandler("brief", generate_brief))
+    doc_handler = MessageHandler(filters.Document.ALL, handle_document)
+    app.add_handler(doc_handler)
 
+    logger.info("Бот запущен.")
     app.run_polling()
