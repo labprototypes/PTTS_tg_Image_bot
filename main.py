@@ -9,7 +9,7 @@ import atexit
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics  # Правильный импорт pdfmetrics
+from reportlab.pdfbase import pdfmetrics
 
 # Создаём файл-замок, если бот уже запущен — выходим
 lock_file = "/tmp/bot.lock"
@@ -62,7 +62,7 @@ async def generate_ideas_from_brief(brief_text: str) -> str:
     )
     return response.choices[0].message.content.strip()
 
-# PDF генерация с использованием reportlab (с кастомным шрифтом)
+# PDF генерация с использованием reportlab (с кастомным шрифтом и переносами)
 def create_pdf(ideas: str) -> BytesIO:
     # Создаем объект BytesIO для записи PDF в память
     pdf_output = BytesIO()
@@ -78,24 +78,45 @@ def create_pdf(ideas: str) -> BytesIO:
 
     y_position = height - 40  # Начальная позиция для текста
 
-    for idx, idea in enumerate(ideas.split("\n\n"), start=1):
-        # Печатаем заголовок (номер идеи и название)
+    ideas_list = ideas.split("\nIdea")  # Разделяем идеи
+
+    for idx, idea in enumerate(ideas_list[1:], start=1):  # Пропускаем первый пустой элемент
+        # Печатаем заголовок (название идеи)
         c.setFont("CustomFont", 16)
-        c.drawString(40, y_position, f"Idea {idx}")
+        c.drawString(40, y_position, f"Idea {idx}: {idea.split('\n')[0]}")
         y_position -= 20
 
-        # Печатаем текст идеи
+        # Печатаем текст идеи (пункты: Интро, Кратко, Подробно, Сценарий, Почему идея хорошая)
         c.setFont("CustomFont", 12)
-        for line in idea.strip().split("\n"):
-            c.drawString(40, y_position, line)
-            y_position -= 14
-            if y_position < 40:  # Перенос на новую страницу
-                c.showPage()
-                c.setFont("CustomFont", 12)
-                y_position = height - 40
+        sections = ['Интро', 'Кратко', 'Подробно', 'Сценарий', 'Почему идея хорошая']
+        
+        for section in sections:
+            # Заголовок пункта
+            c.setFont("CustomFont", 14)
+            c.drawString(40, y_position, f"{section}:")
+            y_position -= 15
+
+            # Текст пункта (с переносами)
+            c.setFont("CustomFont", 12)
+            section_text = [line for line in idea.split('\n') if line.startswith(section)]
+            if section_text:
+                # Используем multi_cell для автоматического переноса текста
+                section_text = section_text[0].split(":")[1:]  # Извлекаем текст после заголовка
+                for line in section_text:
+                    c.setFont("CustomFont", 12)
+                    c.multiCell(width - 80, 14, line.strip())  # Многострочная ячейка с автоматическим переносом
+                    y_position -= 14
+
+            y_position -= 10  # Разделяем пункты
 
         # Добавляем пустую строку между идеями
         y_position -= 20
+
+        # Если страница переполнена, создаем новую
+        if y_position < 40:
+            c.showPage()
+            c.setFont("CustomFont", 12)
+            y_position = height - 40
 
     # Завершаем создание PDF
     c.save()
