@@ -5,6 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 from fpdf import FPDF
 from io import BytesIO
 
+# Загрузка API ключей из переменных окружения
 openai.api_key = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -56,14 +57,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_generating_ideas:
         await update.message.reply_text("Сейчас я генерирую идеи. Подожди немного.")
     else:
-        await update.message.reply_text("Привет! Отправь мне бриф в PDF или DOC, и я сгенерирую идеи.")
+        await update.message.reply_text("Привет! Ты можешь просто поговорить со мной, или отправь бриф в PDF/DOC — и я сгенерирую идеи.")
 
 
 # Файл-бриф
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas
     if is_generating_ideas:
-        await update.message.reply_text("Подожди, я ещё обрабатываю предыдущий бриф.")
+        await update.message.reply_text("Подожди, я еще обрабатываю предыдущий бриф.")
         return
 
     is_generating_ideas = True
@@ -87,12 +88,33 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_generating_ideas = False
 
 
+# Свободное общение с ботом (если не в процессе генерации)
+async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global is_generating_ideas
+    if is_generating_ideas:
+        await update.message.reply_text("Секунду, я еще думаю над идеями. Скоро вернусь!")
+    else:
+        user_message = update.message.text
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "Ты умный и доброжелательный ассистент, общайся в свободной форме."},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.7,
+            max_tokens=800
+        )
+        answer = response.choices[0].message.content.strip()
+        await update.message.reply_text(answer)
+
+
 # Основной запуск
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), chat_mode))
 
     app.run_polling()
 
