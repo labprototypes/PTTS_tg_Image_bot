@@ -12,6 +12,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 from textwrap import wrap
 import fitz  # PyMuPDF
+import re
 
 # Файл-замок
 lock_file = "/tmp/bot.lock"
@@ -40,20 +41,38 @@ def extract_text_from_docx(file_path):
     doc = Document(file_path)
     return "\n".join([para.text for para in doc.paragraphs])
 
-# Генерация идей
+# Генерация идей с GPT-4o (детально и чисто)
 async def generate_ideas_from_brief(brief_text: str) -> str:
+    prompt = (
+        "Ты сильный креативный директор. "
+        "Твоя задача — на основе брифа сгенерировать 5 мощных, полноценных креативных идей. "
+        "Они должны быть развёрнутыми, детализированными, с ясной драматургией и аргументацией.\n\n"
+        "Формат каждой идеи:\n"
+        "1. Название (крупно)\n"
+        "2. Интро — эмоциональное вступление\n"
+        "3. Кратко — одна суть/фраза\n"
+        "4. Подробно — расширенная идея (5–8 строк)\n"
+        "5. Сценарий — пошаговый план, как выглядит ролик или механика (8–10 строк)\n"
+        "6. Почему идея хорошая — аргументы с позиции бренда и потребителя\n\n"
+        f"Вот бриф:\n{brief_text}\n\n"
+        "Не используй форматирование вроде * или #. Пиши просто, чисто и по делу. Сгенерируй ровно 5 идей."
+    )
+
     response = await client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Ты сильный креативный директор. Генерируй креативные идеи строго по структуре."},
-            {"role": "user", "content": f"Вот бриф:\n{brief_text}\nСгенерируй ровно 5 идей. Формат:\n1. Название (крупно)\n2. Интро\n3. Кратко\n4. Подробно\n5. Сценарий\n6. Почему идея хорошая"}
+            {"role": "system", "content": "Ты — креативный директор."},
+            {"role": "user", "content": prompt}
         ],
-        temperature=0.8,
-        max_tokens=2500
+        temperature=0.9,
+        max_tokens=3000
     )
-    return response.choices[0].message.content.strip()
 
-# PDF генерация
+    # Убираем *, # и другие мусорные символы
+    cleaned = re.sub(r"[\\*#]+", "", response.choices[0].message.content.strip())
+    return cleaned
+
+# Генерация PDF с нормальным форматированием
 def create_pdf(ideas: str) -> BytesIO:
     pdf_output = BytesIO()
     c = canvas.Canvas(pdf_output, pagesize=letter)
@@ -142,7 +161,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_document(document=InputFile(pdf_file, filename="ideas.pdf"))
     await update.message.reply_text("Готово! Можем снова болтать 🙂")
-
     is_generating_ideas = False
 
 # Свободный диалог
@@ -167,7 +185,7 @@ async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(response.choices[0].message.content.strip())
 
-# Запуск бота
+# Запуск
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
