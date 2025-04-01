@@ -24,8 +24,8 @@ user_states = {}
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_states[user_id] = {"stage": "chatting", "history": []}
-    await update.message.reply_text("Привет! Я готов к диалогу или жду бриф в .docx/.pdf 😊")
+    user_states[user_id] = {"stage": "waiting_file"}
+    await update.message.reply_text("Привет! Пришли мне .docx или .pdf файл с брифом.")
 
 # Получение документа
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -99,7 +99,7 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
     ]
     user_states[user_id]["stage"] = "chatting"
 
-# Чат с GPT
+# Чат с GPT или Omni
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = user_states.setdefault(user_id, {"stage": "chatting", "history": []})
@@ -110,7 +110,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["history"] = [{"role": "user", "content": full_prompt}]
         state["stage"] = "chatting"
     else:
-        state["history"].append({"role": "user", "content": update.message.text})
+        user_input = update.message.text
+
+        # Предотвращаем повтор, если вдруг Telegram вызвал дублирование
+        if not state["history"] or state["history"][-1]["content"] != user_input:
+            state["history"].append({"role": "user", "content": user_input})
 
     try:
         response = client.chat.completions.create(
