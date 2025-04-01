@@ -11,10 +11,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 is_generating_ideas = False
 
+# Асинхронный клиент для OpenAI (новая версия)
+client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 
 # GPT-4o генерация
 async def generate_ideas_from_brief(brief_text: str) -> str:
-    response = openai.ChatCompletion.create(
+    response = await client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": "Ты сильный креативный директор. Генерируй креативные идеи строго по структуре."},
@@ -93,19 +96,20 @@ async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas
     if is_generating_ideas:
         await update.message.reply_text("Секунду, я еще думаю над идеями. Скоро вернусь!")
-    else:
-        user_message = update.message.text
-        response = await openai.ChatCompletion.acreate(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "Ты умный и доброжелательный ассистент, общайся в свободной форме."},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.7,
-            max_tokens=800
-        )
-        answer = response.choices[0].message.content.strip()
-        await update.message.reply_text(answer)
+        return
+
+    user_message = update.message.text
+    response = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "Ты умный и доброжелательный ассистент, общайся в свободной форме."},
+            {"role": "user", "content": user_message}
+        ],
+        temperature=0.7,
+        max_tokens=800
+    )
+    answer = response.choices[0].message.content.strip()
+    await update.message.reply_text(answer)
 
 
 # Основной запуск
