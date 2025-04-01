@@ -32,9 +32,7 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True
 
-# Путь к шрифтам в корне проекта
-FONT_BOLD_PATH = "TT_Travels_Next_Trial_Bold.ttf"
-FONT_REGULAR_PATH = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
+FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
 LOGO_PATH = "logo.svg"
 
 # Команды
@@ -217,36 +215,19 @@ def generate_pdf(text):
                             leftMargin=40, rightMargin=40,
                             topMargin=80, bottomMargin=40)
 
-    pdfmetrics.registerFont(TTFont("TTTravelsBold", FONT_BOLD_PATH))
-    pdfmetrics.registerFont(TTFont("TTNormsRegular", FONT_REGULAR_PATH))
+    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
 
-    # Шрифт для заголовков
-    header_style = ParagraphStyle(
-        "Header",
-        fontName="TTTravelsBold",
-        fontSize=14,
-        leading=18,
-        spaceAfter=12,
-        alignment=1  # Центрирование текста
-    )
-
-    # Шрифт для обычного текста
-    body_style = ParagraphStyle(
-        "Body",
-        fontName="TTNormsRegular",
+    style = ParagraphStyle(
+        "Custom",
+        fontName="TTTravels",
         fontSize=12,
         leading=18
     )
 
     elements = []
     for paragraph in text.split("\n\n"):
-        # Заголовки выделены жирным
-        elements.append(Paragraph(paragraph.split('\n')[0], header_style))  # Название идеи
+        elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style))
         elements.append(Spacer(1, 12))
-        # Обычный текст
-        for line in paragraph.split('\n')[1:]:
-            elements.append(Paragraph(line, body_style))
-            elements.append(Spacer(1, 12))
 
     drawing = svg2rlg(LOGO_PATH)
 
