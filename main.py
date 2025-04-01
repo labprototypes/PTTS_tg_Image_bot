@@ -14,13 +14,9 @@ from docx import Document
 import pdfplumber
 from openai import OpenAI
 from pathlib import Path
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.pagesizes import A4
-from reportlab.graphics import renderPDF
-from svglib.svglib import svg2rlg
-from reportlab.pdfgen.canvas import Canvas
-from reportlab.lib.units import inch
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
@@ -32,8 +28,8 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True
 
-FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
-LOGO_PATH = "logo.svg"
+FONT_PATH = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Шрифт для текста
+LOGO_PATH = "logo.svg"  # Логотип (пока не используется)
 
 # Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,7 +118,6 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 
     pdf_path = generate_pdf(ideas)
     await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
-    user_states[user_id] = {"stage": "chatting"}
 
 # Чат-режим
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -151,14 +146,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state.get("stage") == "awaiting_custom_prompt":
         user_prompt = update.message.text
         full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
+        state["history"] = [{"role": "user", "content": full_prompt}]
         state["stage"] = "chatting"
     else:
-        user_input = update.message.text
+        state["history"].append({"role": "user", "content": update.message.text})
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": user_input}]
+            messages=state["history"]
         )
         reply = response.choices[0].message.content.strip()
     except Exception as e:
@@ -167,6 +163,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(reply)
+    state["history"].append({"role": "assistant", "content": reply})
 
 # Промпт
 def build_prompt(text, category):
@@ -209,11 +206,11 @@ def generate_pdf(text):
                             leftMargin=40, rightMargin=40,
                             topMargin=80, bottomMargin=40)
 
-    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
+    pdfmetrics.registerFont(TTFont("TTNorms", FONT_PATH))
 
     style = ParagraphStyle(
         "Custom",
-        fontName="TTTravels",
+        fontName="TTNorms",
         fontSize=12,
         leading=18
     )
@@ -223,17 +220,7 @@ def generate_pdf(text):
         elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style))
         elements.append(Spacer(1, 12))
 
-    drawing = svg2rlg(LOGO_PATH)
-
-    def add_logo(canvas: Canvas, doc):
-        width, height = A4
-        logo_width = width * 0.1
-        logo_scale = logo_width / drawing.width
-        canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
-        canvas.restoreState()
-
-    doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
+    doc.build(elements)
     return temp_pdf.name
 
 # Запуск
