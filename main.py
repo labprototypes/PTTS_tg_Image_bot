@@ -10,6 +10,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics  # Правильный импорт pdfmetrics
+from textwrap import wrap  # Для переноса длинных строк
 
 # Создаём файл-замок, если бот уже запущен — выходим
 lock_file = "/tmp/bot.lock"
@@ -78,6 +79,7 @@ def create_pdf(ideas: str) -> BytesIO:
 
     y_position = height - 40  # Начальная позиция для текста
 
+    # Разбиваем идеи по "Idea" и начинаем их вывод
     for idx, idea in enumerate(ideas.split("\n\n"), start=1):
         # Печатаем заголовок (номер идеи и название)
         c.setFont("CustomFont", 16)
@@ -87,12 +89,15 @@ def create_pdf(ideas: str) -> BytesIO:
         # Печатаем текст идеи
         c.setFont("CustomFont", 12)
         for line in idea.strip().split("\n"):
-            c.drawString(40, y_position, line)
-            y_position -= 14
-            if y_position < 40:  # Перенос на новую страницу
-                c.showPage()
-                c.setFont("CustomFont", 12)
-                y_position = height - 40
+            # Используем wrap для автоматического переноса текста
+            wrapped_lines = wrap(line.strip(), width=90)  # длина строки в символах
+            for wline in wrapped_lines:
+                c.drawString(40, y_position, wline)
+                y_position -= 14
+                if y_position < 40:  # Перенос на новую страницу
+                    c.showPage()
+                    c.setFont("CustomFont", 12)
+                    y_position = height - 40
 
         # Добавляем пустую строку между идеями
         y_position -= 20
