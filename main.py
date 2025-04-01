@@ -32,9 +32,9 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True
 
-# Путь к шрифтам
-FONT_BOLD_PATH = "/mnt/data/TT_Travels_Next_Trial_Bold.ttf"
-FONT_NORMAL_PATH = "/mnt/data/TT_Norms_Pro_Trial_Expanded_Medium.ttf"
+# Путь к шрифтам в корне проекта
+FONT_BOLD_PATH = "TT_Travels_Next_Trial_Bold.ttf"
+FONT_REGULAR_PATH = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
 LOGO_PATH = "logo.svg"
 
 # Команды
@@ -130,6 +130,52 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         {"role": "assistant", "content": ideas}
     ]}
 
+# Чат-режим
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active
+    if not active:
+        return
+
+    user_id = update.effective_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        user_input = update.message.text
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": user_input}]
+            )
+            reply = response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"GPT ошибка в общем режиме: {e}")
+            await update.message.reply_text("Ошибка при обращении к GPT.")
+            return
+        await update.message.reply_text(reply)
+        return
+
+    if state.get("stage") == "awaiting_custom_prompt":
+        user_prompt = update.message.text
+        full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
+        state["history"] = [{"role": "user", "content": full_prompt}]
+        state["stage"] = "chatting"
+    else:
+        state["history"].append({"role": "user", "content": update.message.text})
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=state["history"]
+        )
+        reply = response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"GPT ошибка в диалоге: {e}")
+        await update.message.reply_text("Ошибка при обращении к GPT.")
+        return
+
+    await update.message.reply_text(reply)
+    state["history"].append({"role": "assistant", "content": reply})
+
 # Промпт
 def build_prompt(text, category):
     extra = ""
@@ -172,30 +218,35 @@ def generate_pdf(text):
                             topMargin=80, bottomMargin=40)
 
     pdfmetrics.registerFont(TTFont("TTTravelsBold", FONT_BOLD_PATH))
-    pdfmetrics.registerFont(TTFont("TTNormsMedium", FONT_NORMAL_PATH))
+    pdfmetrics.registerFont(TTFont("TTNormsRegular", FONT_REGULAR_PATH))
 
-    style_bold = ParagraphStyle(
-        "Heading",
+    # Шрифт для заголовков
+    header_style = ParagraphStyle(
+        "Header",
         fontName="TTTravelsBold",
         fontSize=14,
-        leading=18
+        leading=18,
+        spaceAfter=12,
+        alignment=1  # Центрирование текста
     )
 
-    style_normal = ParagraphStyle(
-        "Normal",
-        fontName="TTNormsMedium",
+    # Шрифт для обычного текста
+    body_style = ParagraphStyle(
+        "Body",
+        fontName="TTNormsRegular",
         fontSize=12,
         leading=18
     )
 
     elements = []
     for paragraph in text.split("\n\n"):
-        # Заголовок с номером и названием идеи
-        if paragraph.startswith("1)") or paragraph.startswith("2)") or paragraph.startswith("3)") or paragraph.startswith("4)") or paragraph.startswith("5)"):
-            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style_bold))
-        else:
-            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style_normal))
+        # Заголовки выделены жирным
+        elements.append(Paragraph(paragraph.split('\n')[0], header_style))  # Название идеи
         elements.append(Spacer(1, 12))
+        # Обычный текст
+        for line in paragraph.split('\n')[1:]:
+            elements.append(Paragraph(line, body_style))
+            elements.append(Spacer(1, 12))
 
     drawing = svg2rlg(LOGO_PATH)
 
@@ -219,6 +270,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(handle_category_selection))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Бот запускается...")
     app.run_polling()
