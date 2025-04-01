@@ -15,11 +15,12 @@ import pdfplumber
 from openai import OpenAI
 from pathlib import Path
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
-from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.graphics import renderPDF
 from svglib.svglib import svg2rlg
 from reportlab.pdfgen.canvas import Canvas
+from reportlab.lib.units import inch
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
@@ -31,8 +32,8 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True
 
-FONT_PATH_BOLD = "TT_Travels_Next_Trial_Bold.ttf"
-FONT_PATH_NORMAL = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
+FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
+NORMAL_FONT_PATH = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
 LOGO_PATH = "logo.svg"
 
 # Команды
@@ -107,6 +108,9 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 
     await query.edit_message_text("Принято, в работе…")
 
+    # Отключаем диалог, так как мы начинаем создавать PDF
+    active = False
+
     prompt = build_prompt(user_states[user_id]["text"], data)
 
     try:
@@ -121,7 +125,12 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         return
 
     pdf_path = generate_pdf(ideas)
+
+    # Отправляем PDF и включаем диалог обратно
     await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
+
+    # Включаем диалог обратно после отправки PDF
+    active = True
 
     user_states[user_id] = {"stage": "chatting", "history": [
         {"role": "user", "content": prompt},
@@ -169,36 +178,29 @@ def generate_pdf(text):
                             leftMargin=40, rightMargin=40,
                             topMargin=80, bottomMargin=40)
 
-    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH_BOLD))
-    pdfmetrics.registerFont(TTFont("TTNorms", FONT_PATH_NORMAL))
+    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
+    pdfmetrics.registerFont(TTFont("TTNorms", NORMAL_FONT_PATH))
 
-    style_bold = ParagraphStyle(
-        "Title",
+    style_heading = ParagraphStyle(
+        "Heading",
         fontName="TTTravels",
-        fontSize=18,  # Заголовки
-        leading=22
-    )
-
-    style_subheader = ParagraphStyle(
-        "Subheader",
-        fontName="TTTravels",
-        fontSize=14,  # Для подзаголовков
-        leading=18
+        fontSize=16,
+        leading=20,
+        alignment=1
     )
 
     style_normal = ParagraphStyle(
         "Normal",
         fontName="TTNorms",
-        fontSize=12,  # Для обычного текста
-        leading=14
+        fontSize=12,
+        leading=18
     )
 
     elements = []
+    # Убираем * и # и добавляем форматирование
     for paragraph in text.split("\n\n"):
-        if paragraph.startswith("Идея"):
-            elements.append(Paragraph(paragraph, style_bold))
-        elif paragraph.startswith("Вводная часть"):
-            elements.append(Paragraph(paragraph, style_subheader))
+        if "Идея" in paragraph:
+            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style_heading))
         else:
             elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style_normal))
         elements.append(Spacer(1, 12))
@@ -207,10 +209,10 @@ def generate_pdf(text):
 
     def add_logo(canvas: Canvas, doc):
         width, height = A4
-        logo_width = width * 0.1  # Логотип по левому краю
+        logo_width = width * 0.1
         logo_scale = logo_width / drawing.width
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False)
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
@@ -225,7 +227,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(handle_category_selection))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Бот запускается...")
     app.run_polling()
