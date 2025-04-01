@@ -72,9 +72,9 @@ def create_pdf(ideas: str) -> BytesIO:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
-        is_active = True  # Активируем бота
-        await update.message.reply_text("Бот снова активен. Вы можете отправить бриф в формате PDF или DOC.")
-    elif is_generating_ideas:
+        await update.message.reply_text("Бот был остановлен. Для продолжения работы отправь /start.")
+        return
+    if is_generating_ideas:
         await update.message.reply_text("Сейчас я генерирую идеи. Подожди немного.")
     else:
         await update.message.reply_text("Привет! Ты можешь просто поговорить со мной, или отправь бриф в PDF/DOC — и я сгенерирую идеи.")
