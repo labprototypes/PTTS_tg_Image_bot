@@ -14,7 +14,8 @@ from docx import Document
 import pdfplumber
 from openai import OpenAI
 from pathlib import Path
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.graphics import renderPDF
 from svglib.svglib import svg2rlg
@@ -31,7 +32,9 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True
 
-FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
+# Путь к шрифтам
+FONT_BOLD_PATH = "/mnt/data/TT_Travels_Next_Trial_Bold.ttf"
+FONT_NORMAL_PATH = "/mnt/data/TT_Norms_Pro_Trial_Expanded_Medium.ttf"
 LOGO_PATH = "logo.svg"
 
 # Команды
@@ -122,7 +125,6 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
     pdf_path = generate_pdf(ideas)
     await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
 
-    # Включаем чат-режим обратно
     user_states[user_id] = {"stage": "chatting", "history": [
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": ideas}
@@ -169,33 +171,30 @@ def generate_pdf(text):
                             leftMargin=40, rightMargin=40,
                             topMargin=80, bottomMargin=40)
 
-    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
+    pdfmetrics.registerFont(TTFont("TTTravelsBold", FONT_BOLD_PATH))
+    pdfmetrics.registerFont(TTFont("TTNormsMedium", FONT_NORMAL_PATH))
 
-    # Стиль для обычного текста
-    body_style = ParagraphStyle(
-        "Body",
-        fontName="TTTravels",
+    style_bold = ParagraphStyle(
+        "Heading",
+        fontName="TTTravelsBold",
+        fontSize=14,
+        leading=18
+    )
+
+    style_normal = ParagraphStyle(
+        "Normal",
+        fontName="TTNormsMedium",
         fontSize=12,
         leading=18
     )
 
-    # Стиль для заголовков
-    header_style = ParagraphStyle(
-        "Header",
-        fontName="TTTravels",
-        fontSize=16,
-        leading=24,
-        alignment=1,
-        fontName="TTTravels-Bold"
-    )
-
     elements = []
     for paragraph in text.split("\n\n"):
-        # Заголовки и номера идей должны быть жирными и большими
-        if paragraph.startswith("1)") or paragraph.startswith("2)") or paragraph.startswith("3)"):
-            elements.append(Paragraph(paragraph.strip(), header_style))
+        # Заголовок с номером и названием идеи
+        if paragraph.startswith("1)") or paragraph.startswith("2)") or paragraph.startswith("3)") or paragraph.startswith("4)") or paragraph.startswith("5)"):
+            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style_bold))
         else:
-            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), body_style))
+            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style_normal))
         elements.append(Spacer(1, 12))
 
     drawing = svg2rlg(LOGO_PATH)
@@ -221,8 +220,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(handle_category_selection))
 
-    # Убираем обработчик MessageHandler для text, чтобы избежать конфликтов
-    # app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))  # Убираем это
-
     logger.info("Бот запускается...")
-    app.run_polling()  # Используем polling для получения обновлений
+    app.run_polling()
