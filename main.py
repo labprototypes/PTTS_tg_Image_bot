@@ -41,8 +41,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     active = True
     user_id = update.effective_user.id
-    # Инициализируем состояние пользователя с пустым history
-    user_states[user_id] = {"stage": "chatting", "history": []}
+    # Инициализируем состояние пользователя
+    user_states[user_id] = {"stage": "chatting"}
     await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -126,10 +126,7 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 
     pdf_path = generate_pdf(ideas)
     await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
-    user_states[user_id] = {"stage": "chatting", "history": [
-        {"role": "user", "content": prompt},
-        {"role": "assistant", "content": ideas}
-    ]}
+    user_states[user_id] = {"stage": "chatting"}
 
 # Чат-режим
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -158,15 +155,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state.get("stage") == "awaiting_custom_prompt":
         user_prompt = update.message.text
         full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
-        state["history"] = [{"role": "user", "content": full_prompt}]
         state["stage"] = "chatting"
     else:
-        state["history"].append({"role": "user", "content": update.message.text})
+        user_input = update.message.text
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=state["history"]
+            messages=[{"role": "user", "content": user_input}]
         )
         reply = response.choices[0].message.content.strip()
     except Exception as e:
@@ -175,7 +171,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(reply)
-    state["history"].append({"role": "assistant", "content": reply})
 
 # Промпт
 def build_prompt(text, category):
