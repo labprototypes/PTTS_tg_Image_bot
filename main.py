@@ -8,6 +8,8 @@ from io import BytesIO
 import atexit
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab import pdfmetrics
 
 # Создаём файл-замок, если бот уже запущен — выходим
 lock_file = "/tmp/bot.lock"
@@ -60,7 +62,7 @@ async def generate_ideas_from_brief(brief_text: str) -> str:
     )
     return response.choices[0].message.content.strip()
 
-# PDF генерация с использованием reportlab (стандартный шрифт)
+# PDF генерация с использованием reportlab (с кастомным шрифтом)
 def create_pdf(ideas: str) -> BytesIO:
     # Создаем объект BytesIO для записи PDF в память
     pdf_output = BytesIO()
@@ -69,25 +71,27 @@ def create_pdf(ideas: str) -> BytesIO:
     c = canvas.Canvas(pdf_output, pagesize=letter)
     width, height = letter
 
-    # Стандартный шрифт
-    c.setFont("Helvetica", 12)  # Используем стандартный шрифт Helvetica
+    # Регистрируем кастомный шрифт
+    font_path = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Указание на путь к шрифту
+    pdfmetrics.registerFont(TTFont('CustomFont', font_path))
+    c.setFont("CustomFont", 12)  # Используем кастомный шрифт
 
     y_position = height - 40  # Начальная позиция для текста
 
     for idx, idea in enumerate(ideas.split("\n\n"), start=1):
         # Печатаем заголовок (номер идеи и название)
-        c.setFont("Helvetica-Bold", 16)
+        c.setFont("CustomFont", 16)
         c.drawString(40, y_position, f"Idea {idx}")
         y_position -= 20
 
         # Печатаем текст идеи
-        c.setFont("Helvetica", 12)
+        c.setFont("CustomFont", 12)
         for line in idea.strip().split("\n"):
             c.drawString(40, y_position, line)
             y_position -= 14
             if y_position < 40:  # Перенос на новую страницу
                 c.showPage()
-                c.setFont("Helvetica", 12)
+                c.setFont("CustomFont", 12)
                 y_position = height - 40
 
         # Добавляем пустую строку между идеями
