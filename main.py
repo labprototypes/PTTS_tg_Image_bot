@@ -78,8 +78,11 @@ def create_pdf(ideas: str) -> BytesIO:
             pdf.multi_cell(0, 10, line)
         pdf.ln(5)
 
+    # Используем BytesIO для записи PDF в память
     pdf_output = BytesIO()
-    pdf.output(pdf_output)
+    pdf.output(name=pdf_output)  # исправленный вызов
+
+    # Возвращаем PDF в формате байтов
     pdf_output.seek(0)
     return pdf_output
 
