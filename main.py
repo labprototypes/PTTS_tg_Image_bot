@@ -79,7 +79,6 @@ def create_pdf(ideas: str) -> BytesIO:
 
     y_position = height - 40  # Начальная позиция для текста
 
-    # Разбиваем идеи по "Idea" и начинаем их вывод
     for idx, idea in enumerate(ideas.split("\n\n"), start=1):
         # Печатаем заголовок (номер идеи и название)
         c.setFont("CustomFont", 16)
@@ -88,7 +87,8 @@ def create_pdf(ideas: str) -> BytesIO:
 
         # Печатаем текст идеи
         c.setFont("CustomFont", 12)
-        for line in idea.strip().split("\n"):
+        lines = idea.strip().split("\n")
+        for line in lines:
             # Используем wrap для автоматического переноса текста
             wrapped_lines = wrap(line.strip(), width=90)  # длина строки в символах
             for wline in wrapped_lines:
