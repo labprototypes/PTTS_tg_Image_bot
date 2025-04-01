@@ -232,10 +232,16 @@ def generate_pdf(text):
 
     def add_logo(canvas: Canvas, doc):
         width, height = A4
-        logo_width = width * 0.1
-        logo_scale = logo_width / drawing.width
+        # Задаем конкретные размеры логотипа
+        logo_width = 170.079  # 60 мм в пунктах
+        logo_height = 85.04  # 30 мм в пунктах
+
+        # Позиция логотипа (отступы)
+        x_position = 40  # отступ от левого края
+        y_position = height - 60  # отступ от верхнего края
+
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
+        renderPDF.draw(drawing, canvas, x=x_position, y=y_position, showBoundary=False)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
@@ -246,9 +252,6 @@ if __name__ == "__main__":
     TOKEN = os.environ["BOT_TOKEN"]
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Удаляем старый Webhook перед запуском Polling
-    app.bot.delete_webhook()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -256,4 +259,4 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Бот запускается...")
-    app.run_polling()  # Используем только polling
+    app.run_polling()
