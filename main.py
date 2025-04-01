@@ -84,7 +84,7 @@ def create_pdf(ideas: str) -> BytesIO:
     for idx, idea in enumerate(ideas_list[1:], start=1):  # Пропускаем первый пустой элемент
         # Печатаем заголовок (название идеи)
         c.setFont("CustomFont", 16)
-        c.drawString(40, y_position, f"Idea {idx}: {idea.split('\n')[0]}")
+        c.drawString(40, y_position, "Idea {}: {}".format(idx, idea.split('\n')[0]))  # Заменили f-string
         y_position -= 20
 
         # Печатаем текст идеи (пункты: Интро, Кратко, Подробно, Сценарий, Почему идея хорошая)
