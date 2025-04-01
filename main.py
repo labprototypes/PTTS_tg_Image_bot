@@ -14,32 +14,32 @@ from docx import Document
 import pdfplumber
 from openai import OpenAI
 from fpdf import FPDF
+from svglib.svglib import svg2rlg
+from reportlab.graphics import renderPM
 from PIL import Image
-import cairosvg
 
-# Логгер
+# Настройки
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
-active = True  # Флаг работы бота
+active = True
 
-# /start
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     active = True
-    await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
+    await update.message.reply_text("Привет! Пришли мне бриф (.docx или .pdf), либо просто задай вопрос.")
 
-# /stop
+# Команда /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     active = False
-    await update.message.reply_text("Бот остановлен. Чтобы запустить снова, воспользуйся /start")
+    await update.message.reply_text("Бот остановлен. Включить снова — /start")
 
-# Получение документа
+# Обработка документа
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
     if not active:
         return
 
@@ -58,7 +58,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif file_name.endswith(".pdf"):
             text = extract_text_from_pdf(tf.name)
         else:
-            await update.message.reply_text("Пожалуйста, отправьте .docx или .pdf файл.")
+            await update.message.reply_text("Поддерживаются только .docx и .pdf файлы.")
             return
 
     user_states[user_id]["text"] = text
@@ -81,7 +81,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработка выбора категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
     if not active:
         return
 
@@ -97,7 +96,6 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         return
 
     await query.edit_message_text("Принято, в работе…")
-
     prompt = build_prompt(user_states[user_id]["text"], data)
 
     try:
@@ -111,10 +109,10 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         await context.bot.send_message(chat_id=user_id, text="Ошибка при генерации идей.")
         return
 
-    # Отправка PDF
+    # Отправка текста + PDF
+    await context.bot.send_message(chat_id=user_id, text=ideas)
     pdf_path = generate_pdf(ideas)
-    with open(pdf_path, "rb") as pdf_file:
-        await context.bot.send_document(chat_id=user_id, document=InputFile(pdf_file), filename="ideas.pdf")
+    await context.bot.send_document(chat_id=user_id, document=InputFile(pdf_path))
 
     user_states[user_id]["history"] = [
         {"role": "user", "content": prompt},
@@ -124,38 +122,36 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 
 # Обработка диалога
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
     if not active:
         return
 
     user_id = update.effective_user.id
     state = user_states.get(user_id)
 
+    user_input = update.message.text
+
+    # Свободный режим
     if not state:
-        # свободный режим общения с GPT
-        user_input = update.message.text
         try:
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[{"role": "user", "content": user_input}]
             )
             reply = response.choices[0].message.content.strip()
+            await update.message.reply_text(reply)
         except Exception as e:
-            logger.error(f"GPT ошибка в общем режиме: {e}")
+            logger.error(f"GPT ошибка: {e}")
             await update.message.reply_text("Ошибка при обращении к GPT.")
-            return
-
-        await update.message.reply_text(reply)
         return
 
-    # пользователь в процессе работы с брифом
     if state.get("stage") == "awaiting_custom_prompt":
-        user_prompt = update.message.text
-        full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
+        full_prompt = f"{user_input}\n\nБриф:\n{state['text']}"
         state["history"] = [{"role": "user", "content": full_prompt}]
         state["stage"] = "chatting"
+    elif state.get("stage") == "chatting":
+        state["history"].append({"role": "user", "content": user_input})
     else:
-        state["history"].append({"role": "user", "content": update.message.text})
+        return  # временно отключаем диалог при ожидании выбора категории
 
     try:
         response = client.chat.completions.create(
@@ -163,13 +159,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=state["history"]
         )
         reply = response.choices[0].message.content.strip()
+        await update.message.reply_text(reply)
+        state["history"].append({"role": "assistant", "content": reply})
     except Exception as e:
         logger.error(f"GPT ошибка в диалоге: {e}")
         await update.message.reply_text("Ошибка при обращении к GPT.")
-        return
-
-    await update.message.reply_text(reply)
-    state["history"].append({"role": "assistant", "content": reply})
 
 # Построение промпта
 def build_prompt(text, category):
@@ -194,6 +188,7 @@ def build_prompt(text, category):
         f"Бриф:\n{text}"
     )
 
+# Извлечение текста
 def extract_text_from_docx(path):
     doc = Document(path)
     return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
@@ -205,30 +200,29 @@ def extract_text_from_pdf(path):
             text += page.extract_text() or ""
     return text
 
-def generate_pdf(content):
+# PDF генерация
+def generate_pdf(text):
+    from fpdf import FPDF
+    font_path = "TT_Travels_Next_Trial_Bold.ttf"
+    logo_path = "logo.svg"
+
+    # Конвертация SVG логотипа в PNG
+    drawing = svg2rlg(logo_path)
+    temp_png = os.path.join(tempfile.gettempdir(), "logo.png")
+    renderPM.drawToFile(drawing, temp_png, fmt="PNG")
+
     pdf = FPDF()
     pdf.add_page()
+    pdf.add_font("TTTravels", "", font_path, uni=True)
+    pdf.set_font("TTTravels", size=14)
 
-    font_path = "TT_Travels_Next_Trial_Bold.ttf"
-    if os.path.exists(font_path):
-        pdf.add_font("TTTravels", "", font_path, uni=True)
-        pdf.set_font("TTTravels", size=12)
-    else:
-        pdf.set_font("Arial", size=12)
+    pdf.image(temp_png, x=10, y=8, w=40)
+    pdf.ln(30)
 
-    # Вставка логотипа
-    logo_svg = "logo.svg"
-    if os.path.exists(logo_svg):
-        logo_png = os.path.join(tempfile.gettempdir(), "logo.png")
-        cairosvg.svg2png(url=logo_svg, write_to=logo_png)
-        pdf.image(logo_png, x=10, y=8, w=40)
-        pdf.ln(30)
+    for line in text.split("\n"):
+        pdf.multi_cell(0, 10, line)
 
-    # Вставка текста
-    for line in content.split("\n"):
-        pdf.multi_cell(0, 10, txt=line)
-
-    output_path = os.path.join(tempfile.gettempdir(), "output.pdf")
+    output_path = os.path.join(tempfile.gettempdir(), "result.pdf")
     pdf.output(output_path)
     return output_path
 
