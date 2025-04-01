@@ -1,6 +1,7 @@
 import os
 import sys
 import openai
+import re
 from docx import Document
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -12,7 +13,6 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 from textwrap import wrap
 import fitz  # PyMuPDF
-import re
 
 # Файл-замок
 lock_file = "/tmp/bot.lock"
@@ -41,21 +41,21 @@ def extract_text_from_docx(file_path):
     doc = Document(file_path)
     return "\n".join([para.text for para in doc.paragraphs])
 
-# Генерация идей с GPT-4o (детально и чисто)
+# Генерация идей
 async def generate_ideas_from_brief(brief_text: str) -> str:
     prompt = (
         "Ты сильный креативный директор. "
         "Твоя задача — на основе брифа сгенерировать 5 мощных, полноценных креативных идей. "
         "Они должны быть развёрнутыми, детализированными, с ясной драматургией и аргументацией.\n\n"
         "Формат каждой идеи:\n"
-        "1. Название (крупно)\n"
+        "1. Идея N: Название (в первой строке)\n"
         "2. Интро — эмоциональное вступление\n"
         "3. Кратко — одна суть/фраза\n"
         "4. Подробно — расширенная идея (5–8 строк)\n"
         "5. Сценарий — пошаговый план, как выглядит ролик или механика (8–10 строк)\n"
         "6. Почему идея хорошая — аргументы с позиции бренда и потребителя\n\n"
         f"Вот бриф:\n{brief_text}\n\n"
-        "Не используй форматирование вроде * или #. Пиши просто, чисто и по делу. Сгенерируй ровно 5 идей."
+        "Не используй символы форматирования вроде * или #. Пиши чисто и по делу. Сгенерируй ровно 5 идей."
     )
 
     response = await client.chat.completions.create(
@@ -68,11 +68,10 @@ async def generate_ideas_from_brief(brief_text: str) -> str:
         max_tokens=3000
     )
 
-    # Убираем *, # и другие мусорные символы
     cleaned = re.sub(r"[\\*#]+", "", response.choices[0].message.content.strip())
     return cleaned
 
-# Генерация PDF с нормальным форматированием
+# PDF генерация с переносами и полями
 def create_pdf(ideas: str) -> BytesIO:
     pdf_output = BytesIO()
     c = canvas.Canvas(pdf_output, pagesize=letter)
@@ -81,39 +80,44 @@ def create_pdf(ideas: str) -> BytesIO:
     font_path = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
     pdfmetrics.registerFont(TTFont('CustomFont', font_path))
 
-    margin_left = 50
-    margin_right = 50
+    margin_left = 45
+    margin_right = 45
     max_line_width = width - margin_left - margin_right
-    font_size = 12
-    line_height = 16
+    font_size = 11.5
+    line_height = 15
 
     y_position = height - 50
+    c.setFont("CustomFont", font_size)
 
-    for idx, idea in enumerate(ideas.strip().split("\n\n"), start=1):
-        c.setFont("CustomFont", 16)
-        c.drawString(margin_left, y_position, f"Idea {idx}")
-        y_position -= 24
+    # Идеи начинаются с "Идея N:"
+    ideas_list = re.split(r"(?=\n?Идея \d+:)", ideas.strip())
 
-        c.setFont("CustomFont", font_size)
-        lines = idea.strip().split("\n")
-
+    for idea_block in ideas_list:
+        lines = idea_block.strip().split("\n")
         for line in lines:
-            wrapped = wrap(line, width=int(max_line_width / (font_size * 0.55)))
+            if re.match(r"^Идея \d+:", line):
+                c.setFont("CustomFont", 16)
+                wrapped = wrap(line, width=int(max_line_width / (16 * 0.55)))
+            else:
+                c.setFont("CustomFont", font_size)
+                wrapped = wrap(line, width=int(max_line_width / (font_size * 0.55)))
+
             for part in wrapped:
                 if y_position < 50:
                     c.showPage()
-                    c.setFont("CustomFont", font_size)
                     y_position = height - 50
+                    c.setFont("CustomFont", font_size)
                 c.drawString(margin_left, y_position, part)
                 y_position -= line_height
-            y_position -= 4
+
+            y_position -= 5
         y_position -= 20
 
     c.save()
     pdf_output.seek(0)
     return pdf_output
 
-# Команды
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
@@ -124,12 +128,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Привет! Ты можешь просто поговорить со мной, или отправь бриф в PDF/DOC — и я сгенерирую идеи.")
 
+# /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_active
     is_active = False
     await update.message.reply_text("Бот остановлен. Для продолжения работы отправь /start.")
 
-# Обработка документа
+# Бриф-файл
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
@@ -163,7 +168,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Готово! Можем снова болтать 🙂")
     is_generating_ideas = False
 
-# Свободный диалог
+# Чат-режим
 async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
