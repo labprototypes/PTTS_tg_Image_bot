@@ -9,7 +9,7 @@ import atexit
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase import pdfmetrics  # Правильный импорт pdfmetrics
 
 # Создаём файл-замок, если бот уже запущен — выходим
 lock_file = "/tmp/bot.lock"
@@ -78,42 +78,24 @@ def create_pdf(ideas: str) -> BytesIO:
 
     y_position = height - 40  # Начальная позиция для текста
 
-    ideas_list = ideas.split("\nIdea")  # Разделяем идеи
-
-    for idx, idea in enumerate(ideas_list[1:], start=1):  # Пропускаем первый пустой элемент
-        # Печатаем заголовок (название идеи)
+    for idx, idea in enumerate(ideas.split("\n\n"), start=1):
+        # Печатаем заголовок (номер идеи и название)
         c.setFont("CustomFont", 16)
-        c.drawString(40, y_position, f"Idea {idx}: {idea.split('\n')[0]}")
+        c.drawString(40, y_position, f"Idea {idx}")
         y_position -= 20
 
-        # Печатаем текст идеи (пункты: Интро, Кратко, Подробно, Сценарий, Почему идея хорошая)
+        # Печатаем текст идеи
         c.setFont("CustomFont", 12)
-        sections = ['Интро', 'Кратко', 'Подробно', 'Сценарий', 'Почему идея хорошая']
-        
-        for section in sections:
-            # Заголовок пункта
-            c.setFont("CustomFont", 14)
-            c.drawString(40, y_position, f"{section}:")
-            y_position -= 15
-
-            # Текст пункта
-            c.setFont("CustomFont", 12)
-            section_text = [line for line in idea.split('\n') if line.startswith(section)]
-            if section_text:
-                for line in section_text[0].split(":")[1:]:
-                    c.drawString(40, y_position, line.strip())
-                    y_position -= 14
-
-            y_position -= 10  # Разделяем пункты
+        for line in idea.strip().split("\n"):
+            c.drawString(40, y_position, line)
+            y_position -= 14
+            if y_position < 40:  # Перенос на новую страницу
+                c.showPage()
+                c.setFont("CustomFont", 12)
+                y_position = height - 40
 
         # Добавляем пустую строку между идеями
         y_position -= 20
-
-        # Если страница переполнена, создаем новую
-        if y_position < 40:
-            c.showPage()
-            c.setFont("CustomFont", 12)
-            y_position = height - 40
 
     # Завершаем создание PDF
     c.save()
