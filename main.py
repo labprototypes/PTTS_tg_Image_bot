@@ -9,48 +9,38 @@ import atexit
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics  # Правильный импорт pdfmetrics
-from textwrap import wrap  # Для переноса длинных строк
+from reportlab.pdfbase import pdfmetrics
+from textwrap import wrap
+import fitz  # PyMuPDF
 
-# Создаём файл-замок, если бот уже запущен — выходим
+# Файл-замок
 lock_file = "/tmp/bot.lock"
-
 if os.path.exists(lock_file):
     print("Бот уже запущен. Завершаем процесс.")
     sys.exit()
-
 with open(lock_file, "w") as f:
     f.write("running")
-
-# При завершении — удалим замок
 atexit.register(lambda: os.remove(lock_file))
 
-# Загрузка API ключей из переменных окружения
+# Ключи
 openai.api_key = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-is_generating_ideas = False
-is_active = True  # Флаг активности бота
-
-# Асинхронный клиент для OpenAI (новая версия)
 client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Функция для извлечения текста из PDF
-import fitz  # PyMuPDF
+is_generating_ideas = False
+is_active = True
+
+# PDF → текст
 def extract_text_from_pdf(file_path):
     doc = fitz.open(file_path)
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    return text
+    return "\n".join(page.get_text() for page in doc)
 
-# Функция для извлечения текста из DOCX
+# DOCX → текст
 def extract_text_from_docx(file_path):
     doc = Document(file_path)
-    text = "\n".join([para.text for para in doc.paragraphs])
-    return text
+    return "\n".join([para.text for para in doc.paragraphs])
 
-# GPT-4o генерация (обновленный запрос с 5 идеями)
+# Генерация идей
 async def generate_ideas_from_brief(brief_text: str) -> str:
     response = await client.chat.completions.create(
         model="gpt-4o",
@@ -63,53 +53,48 @@ async def generate_ideas_from_brief(brief_text: str) -> str:
     )
     return response.choices[0].message.content.strip()
 
-# PDF генерация с использованием reportlab (с кастомным шрифтом)
+# PDF генерация
 def create_pdf(ideas: str) -> BytesIO:
-    # Создаем объект BytesIO для записи PDF в память
     pdf_output = BytesIO()
-
-    # Создаем объект canvas для генерации PDF
     c = canvas.Canvas(pdf_output, pagesize=letter)
     width, height = letter
 
-    # Регистрируем кастомный шрифт
-    font_path = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Указание на путь к шрифту
+    font_path = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
     pdfmetrics.registerFont(TTFont('CustomFont', font_path))
-    c.setFont("CustomFont", 12)  # Используем кастомный шрифт
 
-    y_position = height - 40  # Начальная позиция для текста
+    margin_left = 50
+    margin_right = 50
+    max_line_width = width - margin_left - margin_right
+    font_size = 12
+    line_height = 16
 
-    for idx, idea in enumerate(ideas.split("\n\n"), start=1):
-        # Печатаем заголовок (номер идеи и название)
+    y_position = height - 50
+
+    for idx, idea in enumerate(ideas.strip().split("\n\n"), start=1):
         c.setFont("CustomFont", 16)
-        c.drawString(40, y_position, f"Idea {idx}")
-        y_position -= 20
+        c.drawString(margin_left, y_position, f"Idea {idx}")
+        y_position -= 24
 
-        # Печатаем текст идеи
-        c.setFont("CustomFont", 12)
+        c.setFont("CustomFont", font_size)
         lines = idea.strip().split("\n")
-        for line in lines:
-            # Используем wrap для автоматического переноса текста
-            wrapped_lines = wrap(line.strip(), width=90)  # длина строки в символах
-            for wline in wrapped_lines:
-                c.drawString(40, y_position, wline)
-                y_position -= 14
-                if y_position < 40:  # Перенос на новую страницу
-                    c.showPage()
-                    c.setFont("CustomFont", 12)
-                    y_position = height - 40
 
-        # Добавляем пустую строку между идеями
+        for line in lines:
+            wrapped = wrap(line, width=int(max_line_width / (font_size * 0.55)))
+            for part in wrapped:
+                if y_position < 50:
+                    c.showPage()
+                    c.setFont("CustomFont", font_size)
+                    y_position = height - 50
+                c.drawString(margin_left, y_position, part)
+                y_position -= line_height
+            y_position -= 4
         y_position -= 20
 
-    # Завершаем создание PDF
     c.save()
-
-    # Возвращаем объект BytesIO, содержащий PDF
     pdf_output.seek(0)
     return pdf_output
 
-# /start
+# Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
@@ -120,13 +105,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Привет! Ты можешь просто поговорить со мной, или отправь бриф в PDF/DOC — и я сгенерирую идеи.")
 
-# /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_active
     is_active = False
     await update.message.reply_text("Бот остановлен. Для продолжения работы отправь /start.")
 
-# Файл-бриф
+# Обработка документа
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
@@ -144,7 +128,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_path = f"/tmp/{document.file_name}"
     await file.download_to_drive(file_path)
 
-    # Определяем формат файла и извлекаем текст
     if file_path.endswith(".pdf"):
         brief_text = extract_text_from_pdf(file_path)
     elif file_path.endswith(".docx"):
@@ -154,7 +137,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_generating_ideas = False
         return
 
-    # Генерация идей с использованием GPT-4o
     ideas = await generate_ideas_from_brief(brief_text)
     pdf_file = create_pdf(ideas)
 
@@ -163,7 +145,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     is_generating_ideas = False
 
-# Свободное общение с ботом (если не в процессе генерации)
+# Свободный диалог
 async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
@@ -183,18 +165,15 @@ async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temperature=0.7,
         max_tokens=800
     )
-    answer = response.choices[0].message.content.strip()
-    await update.message.reply_text(answer)
+    await update.message.reply_text(response.choices[0].message.content.strip())
 
-# Основной запуск
+# Запуск бота
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), chat_mode))
-
     app.run_polling()
 
 if __name__ == "__main__":
