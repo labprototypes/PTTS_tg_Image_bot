@@ -32,8 +32,7 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True
 
-FONT_BOLD_PATH = "TT_Travels_Next_Trial_Bold.ttf"
-FONT_NORMAL_PATH = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
+FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
 LOGO_PATH = "logo.svg"
 
 # Команды
@@ -216,49 +215,47 @@ def generate_pdf(text):
                             leftMargin=40, rightMargin=40,
                             topMargin=80, bottomMargin=40)
 
-    pdfmetrics.registerFont(TTFont("TTTravels", FONT_BOLD_PATH))
-    pdfmetrics.registerFont(TTFont("TTNorms", FONT_NORMAL_PATH))
+    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
+    pdfmetrics.registerFont(TTFont("NormsPro", "TT_Norms_Pro_Trial_Expanded_Medium.ttf"))
 
-    # Define styles
-    title_style = ParagraphStyle(
+    style_bold = ParagraphStyle(
         "Title",
         fontName="TTTravels",
-        fontSize=18,
-        leading=22
+        fontSize=16,
+        leading=20
     )
-
-    subtitle_style = ParagraphStyle(
-        "Subtitle",
+    style_subheading = ParagraphStyle(
+        "Subheading",
         fontName="TTTravels",
         fontSize=14,
         leading=18
     )
-
-    normal_style = ParagraphStyle(
+    style_normal = ParagraphStyle(
         "Normal",
-        fontName="TTNorms",
+        fontName="NormsPro",
         fontSize=12,
         leading=18
     )
 
     elements = []
     for paragraph in text.split("\n\n"):
-        if paragraph.strip().startswith("1)") or paragraph.strip().startswith("2)") or paragraph.strip().startswith("3)"): 
-            elements.append(Paragraph(paragraph.strip(), title_style))  # Title
-        elif paragraph.strip().startswith("4)") or paragraph.strip().startswith("5)"):
-            elements.append(Paragraph(paragraph.strip(), subtitle_style))  # Subtitle
+        if paragraph.startswith("1)") or paragraph.startswith("2)") or paragraph.startswith("3)"):
+            elements.append(Paragraph(paragraph.strip(), style_bold))
+        elif paragraph.startswith("   "):
+            elements.append(Paragraph(paragraph.strip(), style_normal))
         else:
-            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), normal_style))  # Normal text
+            elements.append(Paragraph(paragraph.strip(), style_subheading))
+
         elements.append(Spacer(1, 12))
 
     drawing = svg2rlg(LOGO_PATH)
 
     def add_logo(canvas: Canvas, doc):
         width, height = A4
-        logo_width = width * 0.1
+        logo_width = width * 0.1  # 10% ширины страницы
         logo_scale = logo_width / drawing.width
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
