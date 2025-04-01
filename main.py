@@ -14,13 +14,12 @@ from docx import Document
 import pdfplumber
 from openai import OpenAI
 from pathlib import Path
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.graphics import renderPDF
 from svglib.svglib import svg2rlg
 from reportlab.pdfgen.canvas import Canvas
-from reportlab.lib.units import inch
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
@@ -33,7 +32,7 @@ user_states = {}
 active = True
 
 FONT_PATH_BOLD = "TT_Travels_Next_Trial_Bold.ttf"
-FONT_PATH_REGULAR = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
+FONT_PATH_NORMAL = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
 LOGO_PATH = "logo.svg"
 
 # Команды
@@ -216,55 +215,49 @@ def generate_pdf(text):
                             leftMargin=40, rightMargin=40,
                             topMargin=80, bottomMargin=40)
 
-    pdfmetrics.registerFont(TTFont("TTTravelsBold", FONT_PATH_BOLD))
-    pdfmetrics.registerFont(TTFont("TTNorms", FONT_PATH_REGULAR))
+    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH_BOLD))
+    pdfmetrics.registerFont(TTFont("TTNorms", FONT_PATH_NORMAL))
 
-    # Заголовок
-    title_style = ParagraphStyle(
+    style_bold = ParagraphStyle(
         "Title",
-        fontName="TTTravelsBold",
-        fontSize=18,
+        fontName="TTTravels",
+        fontSize=18,  # Большой размер шрифта для заголовков
         leading=22
     )
 
-    # Подзаголовки
-    subheading_style = ParagraphStyle(
-        "Subheading",
-        fontName="TTTravelsBold",
-        fontSize=14,
+    style_subheader = ParagraphStyle(
+        "Subheader",
+        fontName="TTTravels",
+        fontSize=14,  # Для подзаголовков
         leading=18
     )
 
-    # Обычный текст
-    normal_style = ParagraphStyle(
+    style_normal = ParagraphStyle(
         "Normal",
         fontName="TTNorms",
-        fontSize=12,
-        leading=16
+        fontSize=12,  # Для обычного текста
+        leading=14
     )
 
     elements = []
-
-    # Перебор всех блоков текста
     for paragraph in text.split("\n\n"):
-        # Смотрим на первые строки, чтобы различать заголовки и обычный текст
         if paragraph.startswith("Идея"):
-            elements.append(Paragraph(paragraph, title_style))
-        elif paragraph.startswith("Вводная часть") or paragraph.startswith("Короткое описание"):
-            elements.append(Paragraph(paragraph, subheading_style))
+            elements.append(Paragraph(paragraph, style_bold))
+        elif paragraph.startswith("Вводная часть"):
+            elements.append(Paragraph(paragraph, style_subheader))
         else:
-            elements.append(Paragraph(paragraph.strip(), normal_style))
-
+            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style_normal))
         elements.append(Spacer(1, 12))
 
     drawing = svg2rlg(LOGO_PATH)
 
     def add_logo(canvas: Canvas, doc):
         width, height = A4
-        logo_width = width * 0.1
+        logo_width = width * 0.1  # Длина логотипа - 10% ширины страницы
         logo_scale = logo_width / drawing.width
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
+        # Логотип по левому краю
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False)  # Убрали параметр scale
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
