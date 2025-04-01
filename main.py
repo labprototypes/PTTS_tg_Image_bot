@@ -1,7 +1,7 @@
 import logging
 import os
 import tempfile
-from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -14,25 +14,20 @@ from docx import Document
 import pdfplumber
 from openai import OpenAI
 
-# Настройка логгера
+# Логгер
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Подключение к OpenAI
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-
-# Состояния пользователя
 user_states = {}
 
-
-# Команда /start
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_states[user_id] = {"stage": "waiting_file"}
     await update.message.reply_text("Привет! Пришли мне .docx или .pdf файл с брифом.")
 
-
-# Обработка входящих документов
+# Получение документа
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_states[user_id] = {"stage": "waiting_category"}
@@ -44,7 +39,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_file = await context.bot.get_file(file.file_id)
         await new_file.download_to_drive(custom_path=tf.name)
 
-        # Определяем формат
         if file_name.endswith(".docx"):
             text = extract_text_from_docx(tf.name)
         elif file_name.endswith(".pdf"):
@@ -64,22 +58,27 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Креативный сиддинг", callback_data="seeding"),
             InlineKeyboardButton("Ивент", callback_data="event"),
         ],
+        [InlineKeyboardButton("Свой запрос", callback_data="custom")],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите тип креатива:", reply_markup=reply_markup)
-
+    await update.message.reply_text(
+        "Выберите тип креатива:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 # Обработка выбора категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    data = query.data
+    user_states[user_id]["category"] = data
 
-    category = query.data
-    user_states[user_id]["category"] = category
-    text = user_states[user_id]["text"]
+    if data == "custom":
+        user_states[user_id]["stage"] = "awaiting_custom_prompt"
+        await query.edit_message_text("Напиши, что ты хочешь получить от GPT по брифу.")
+        return
 
-    prompt = build_prompt(text, category)
+    prompt = build_prompt(user_states[user_id]["text"], data)
 
     try:
         response = client.chat.completions.create(
@@ -88,32 +87,34 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         )
         ideas = response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"Ошибка GPT: {e}")
-        await query.edit_message_text("Произошла ошибка при генерации идей.")
+        logger.error(f"GPT ошибка: {e}")
+        await query.edit_message_text("Ошибка при генерации идей.")
         return
 
-    await query.edit_message_text("Готово! Вот сгенерированные идеи:")
+    await query.edit_message_text("Готово! Вот идеи:")
     await context.bot.send_message(chat_id=user_id, text=ideas)
-
-    # Сохраняем для продолжения диалога
     user_states[user_id]["history"] = [
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": ideas},
     ]
     user_states[user_id]["stage"] = "chatting"
 
-
-# Обработка сообщений от пользователя в режиме диалога
+# Чат с GPT
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = user_states.get(user_id)
 
-    if not state or "history" not in state:
-        await update.message.reply_text("Пришли мне сначала бриф в виде .docx или .pdf.")
+    if not state:
+        await update.message.reply_text("Сначала пришли бриф.")
         return
 
-    user_input = update.message.text
-    state["history"].append({"role": "user", "content": user_input})
+    if state.get("stage") == "awaiting_custom_prompt":
+        user_prompt = update.message.text
+        full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
+        state["history"] = [{"role": "user", "content": full_prompt}]
+        state["stage"] = "chatting"
+    else:
+        state["history"].append({"role": "user", "content": update.message.text})
 
     try:
         response = client.chat.completions.create(
@@ -122,17 +123,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         reply = response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"Ошибка GPT в диалоге: {e}")
+        logger.error(f"GPT ошибка в диалоге: {e}")
         await update.message.reply_text("Ошибка при обращении к GPT.")
         return
 
     await update.message.reply_text(reply)
     state["history"].append({"role": "assistant", "content": reply})
 
-
-# Генерация промпта
+# Построение промпта
 def build_prompt(text, category):
-    prompt = (
+    extra = ""
+    if category == "video":
+        extra = "\nДобавь раскадровку: опиши минимум 6 кадров с описанием и звуком в кадре."
+    return (
         f"Ты креативщик. Придумай 5 уникальных идей по следующему брифу. "
         f"Формат каждой идеи:\n\n"
         f"1) Название идеи\n"
@@ -144,19 +147,17 @@ def build_prompt(text, category):
         f"   5.2) Если это 360-кампания – предложи раскладку по каналам\n"
         f"   5.3) Если это креативный сиддинг – предложи механику\n"
         f"   5.4) Если это ивент – предложи реализацию\n\n"
+        f"Каждый пункт должен быть раскрыт подробно, на 2–4 абзаца.\n"
         f"Тип креатива: {category}\n"
+        f"{extra}\n\n"
         f"Бриф:\n{text}"
     )
-    return prompt
 
-
-# Извлечение текста из DOCX
+# Вспомогательные функции
 def extract_text_from_docx(path):
     doc = Document(path)
-    return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
-
-# Извлечение текста из PDF
 def extract_text_from_pdf(path):
     text = ""
     with pdfplumber.open(path) as pdf:
@@ -164,8 +165,7 @@ def extract_text_from_pdf(path):
             text += page.extract_text() or ""
     return text
 
-
-# Запуск бота
+# Запуск
 if __name__ == "__main__":
     TOKEN = os.environ["BOT_TOKEN"]
     app = ApplicationBuilder().token(TOKEN).build()
