@@ -6,3 +6,4 @@ python-docx
 svglib
 reportlab
 Pillow
+PyMuPDF
