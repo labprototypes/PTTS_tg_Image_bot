@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
-active = True
+active = True  # Флаг для активации/деактивации диалога
 
 FONT_PATH = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Шрифт для текста
 
@@ -44,7 +44,7 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработка документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
-    if not active:
+    if not active:  # Останавливаем диалог, когда приходят документы
         return
 
     user_id = update.effective_user.id
@@ -83,11 +83,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+    active = False  # Останавливаем диалог
+
 # Выбор категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
-    if not active:
-        return
+    if active:
+        return  # Если диалог активен, не продолжаем
 
     query = update.callback_query
     await query.answer()
@@ -118,42 +120,20 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
     pdf_path = generate_pdf(ideas)
     await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
 
+    active = True  # Включаем диалог снова после отправки пдф
+
 # Чат-режим
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
-    if not active:
+    if not active:  # Если диалог не активен, ничего не делаем
         return
 
     user_id = update.effective_user.id
-    state = user_states.get(user_id)
-
-    if not state:
-        user_input = update.message.text
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": user_input}]
-            )
-            reply = response.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"GPT ошибка в общем режиме: {e}")
-            await update.message.reply_text("Ошибка при обращении к GPT.")
-            return
-        await update.message.reply_text(reply)
-        return
-
-    if state.get("stage") == "awaiting_custom_prompt":
-        user_prompt = update.message.text
-        full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
-        state["history"] = [{"role": "user", "content": full_prompt}]
-        state["stage"] = "chatting"
-    else:
-        state["history"].append({"role": "user", "content": update.message.text})
-
+    user_input = update.message.text
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=state["history"]
+            messages=[{"role": "user", "content": user_input}]
         )
         reply = response.choices[0].message.content.strip()
     except Exception as e:
@@ -162,7 +142,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(reply)
-    state["history"].append({"role": "assistant", "content": reply})
 
 # Промпт
 def build_prompt(text, category):
