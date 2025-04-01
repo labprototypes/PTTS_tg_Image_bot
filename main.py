@@ -1,38 +1,41 @@
-import os
 import logging
+import os
 import tempfile
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    ContextTypes, CallbackQueryHandler, filters
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
 )
 from docx import Document
 import pdfplumber
 from openai import OpenAI
 from fpdf import FPDF
 from svglib.svglib import svg2rlg
-from reportlab.graphics import renderPDF
+from reportlab.graphics import renderPM
 
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics
-
+# Логгер
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
-active = True
+active = True  # Флаг работы бота
 
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
 
+# /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     active = False
-    await update.message.reply_text("Бот остановлен. Воспользуйся /start чтобы запустить снова.")
+    await update.message.reply_text("Бот остановлен. Чтобы запустить снова, воспользуйся /start")
 
+# Получение документа
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     if not active:
@@ -40,6 +43,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     user_states[user_id] = {"stage": "waiting_category"}
+
     file = update.message.document
     file_name = file.file_name.lower()
 
@@ -52,31 +56,42 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif file_name.endswith(".pdf"):
             text = extract_text_from_pdf(tf.name)
         else:
-            await update.message.reply_text("Пожалуйста, отправьте файл в формате .docx или .pdf.")
+            await update.message.reply_text("Пожалуйста, отправьте .docx или .pdf файл.")
             return
 
     user_states[user_id]["text"] = text
 
     keyboard = [
-        [InlineKeyboardButton("Видеоролик", callback_data="video"),
-         InlineKeyboardButton("360-кампания", callback_data="360")],
-        [InlineKeyboardButton("Креативный сиддинг", callback_data="seeding"),
-         InlineKeyboardButton("Ивент", callback_data="event")],
-        [InlineKeyboardButton("Свой запрос", callback_data="custom")]
+        [
+            InlineKeyboardButton("Видеоролик", callback_data="video"),
+            InlineKeyboardButton("360-кампания", callback_data="360"),
+        ],
+        [
+            InlineKeyboardButton("Креативный сиддинг", callback_data="seeding"),
+            InlineKeyboardButton("Ивент", callback_data="event"),
+        ],
+        [InlineKeyboardButton("Свой запрос", callback_data="custom")],
     ]
-    await update.message.reply_text("Выберите тип креатива:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "Выберите тип креатива:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
+# Обработка выбора категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active
+    if not active:
+        return
+
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     data = query.data
-
     user_states[user_id]["category"] = data
 
     if data == "custom":
         user_states[user_id]["stage"] = "awaiting_custom_prompt"
-        await query.edit_message_text("Напиши свой запрос по брифу.")
+        await query.edit_message_text("Напиши, что ты хочешь получить от GPT по брифу.")
         return
 
     await query.edit_message_text("Принято, в работе…")
@@ -91,18 +106,20 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         ideas = response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"GPT ошибка: {e}")
-        await context.bot.send_message(chat_id=user_id, text="Ошибка при генерации ответа.")
+        await context.bot.send_message(chat_id=user_id, text="Ошибка при генерации идей.")
         return
 
     pdf_path = generate_pdf(ideas)
-    await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
+    await context.bot.send_document(chat_id=user_id, document=InputFile(pdf_path))
     os.remove(pdf_path)
 
-    user_states[user_id] = {"stage": "chatting", "history": [
+    user_states[user_id]["history"] = [
         {"role": "user", "content": prompt},
-        {"role": "assistant", "content": ideas}
-    ]}
+        {"role": "assistant", "content": ideas},
+    ]
+    user_states[user_id]["stage"] = "chatting"
 
+# Обработка диалога
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     if not active:
@@ -120,9 +137,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             reply = response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"GPT ошибка: {e}")
+            logger.error(f"GPT ошибка в общем режиме: {e}")
             await update.message.reply_text("Ошибка при обращении к GPT.")
             return
+
         await update.message.reply_text(reply)
         return
 
@@ -148,9 +166,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     state["history"].append({"role": "assistant", "content": reply})
 
+# Построение промпта
+def build_prompt(text, category):
+    extra = ""
+    if category == "video":
+        extra = "\nДобавь раскадровку: опиши минимум 6 кадров с описанием и звуком в кадре."
+    return (
+        f"Ты креативщик. Придумай 5 уникальных идей по следующему брифу. "
+        f"Формат каждой идеи:\n\n"
+        f"1) Название идеи\n"
+        f"2) Вводная часть\n"
+        f"3) Короткое описание идеи\n"
+        f"4) Полное описание идеи\n"
+        f"5) Реализация идеи\n"
+        f"   5.1) Если это видеоролик – предложи сценарий\n"
+        f"   5.2) Если это 360-кампания – предложи раскладку по каналам\n"
+        f"   5.3) Если это креативный сиддинг – предложи механику\n"
+        f"   5.4) Если это ивент – предложи реализацию\n\n"
+        f"Каждый пункт должен быть раскрыт подробно, на 2–4 абзаца.\n"
+        f"Тип креатива: {category}\n"
+        f"{extra}\n\n"
+        f"Бриф:\n{text}"
+    )
+
+# Генерация PDF
+def generate_pdf(content: str) -> str:
+    pdf = FPDF()
+    pdf.add_page()
+
+    font_path = os.path.join(os.path.dirname(__file__), "TT_Travels_Next_Trial_Bold.ttf")
+    pdf.add_font("TTTravels", "", font_path, uni=True)
+    pdf.set_font("TTTravels", size=12)
+
+    # Логотип
+    logo_svg_path = os.path.join(os.path.dirname(__file__), "logo.svg")
+    logo_png_path = os.path.join(tempfile.gettempdir(), "logo.png")
+    drawing = svg2rlg(logo_svg_path)
+    renderPM.drawToFile(drawing, logo_png_path, fmt="PNG")
+    pdf.image(logo_png_path, x=10, y=10, w=50)
+
+    pdf.ln(30)
+
+    for line in content.split("\n"):
+        pdf.multi_cell(0, 10, txt=line)
+
+    result_path = os.path.join(tempfile.gettempdir(), "ideas_output.pdf")
+    pdf.output(result_path)
+    return result_path
+
+# Извлечение текста из файлов
 def extract_text_from_docx(path):
     doc = Document(path)
-    return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
 def extract_text_from_pdf(path):
     text = ""
@@ -159,45 +226,7 @@ def extract_text_from_pdf(path):
             text += page.extract_text() or ""
     return text
 
-def build_prompt(text, category):
-    extra = ""
-    if category == "video":
-        extra = "\nДобавь раскадровку: опиши минимум 6 кадров с описанием и звуком."
-    return (
-        f"Ты креативщик. Придумай 5 уникальных идей по следующему брифу. "
-        f"Формат каждой идеи:\n"
-        f"1) Название\n2) Вводная\n3) Краткое описание\n4) Полное описание\n"
-        f"5) Реализация\n   - Сценарий / Каналы / Механика / Ивент\n"
-        f"Тип креатива: {category}\n{extra}\n\nБриф:\n{text}"
-    )
-
-def generate_pdf(content):
-    temp_path = tempfile.mktemp(suffix=".pdf")
-    c = canvas.Canvas(temp_path, pagesize=A4)
-
-    pdfmetrics.registerFont(TTFont("TTTravels", "TT_Travels_Next_Trial_Bold.ttf"))
-    c.setFont("TTTravels", 12)
-
-    # Логотип SVG
-    drawing = svg2rlg("logo.svg")
-    renderPDF.draw(drawing, c, 30, 780)
-
-    # Текст
-    from reportlab.platypus import Paragraph
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import Frame
-
-    styles = getSampleStyleSheet()
-    frame = Frame(40, 40, 510, 700, showBoundary=0)
-    from reportlab.platypus import SimpleDocTemplate
-    from reportlab.platypus import Paragraph
-
-    doc = SimpleDocTemplate(temp_path, pagesize=A4)
-    story = [Paragraph(p, styles["Normal"]) for p in content.split("\n") if p.strip()]
-    doc.build(story)
-
-    return temp_path
-
+# Запуск
 if __name__ == "__main__":
     TOKEN = os.environ["BOT_TOKEN"]
     app = ApplicationBuilder().token(TOKEN).build()
