@@ -1,8 +1,8 @@
-python-telegram-bot==20.3
-openai>=1.0.0
-python-dotenv
+python-telegram-bot==20.7
+openai
+fpdf
 pdfplumber
 python-docx
-fpdf2
-pillow
-cairosvg
+svglib
+reportlab
+Pillow
