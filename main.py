@@ -2,34 +2,98 @@ import logging
 import os
 import tempfile
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
 )
 from docx import Document
 import pdfplumber
 from openai import OpenAI
 
-# --- Логгер ---
+# Логгирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- GPT ---
+# GPT клиент
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-# --- Категории ---
-CATEGORY_OPTIONS = [
-    ("🎬 Видеоролик", "video"),
-    ("📢 360-кампания", "campaign"),
-    ("👥 Креативный сиддинг", "seeding"),
-    ("🎉 Ивент", "event"),
-    ("❓ Другое", "other"),
-]
+# Хранилище контекста
+user_context = {}
 
-# --- Генерация идей ---
-def build_prompt(text, category):
-    return (
+# /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привет! 👋 Я помогу тебе с креативными идеями.\n\n"
+        "Просто отправь мне .docx или .pdf с брифом, и я всё сделаю сам 💡"
+    )
+
+# обработка документа
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file = update.message.document
+    file_name = file.file_name.lower()
+
+    with tempfile.NamedTemporaryFile(delete=False) as tf:
+        new_file = await context.bot.get_file(file.file_id)
+        await new_file.download_to_drive(custom_path=tf.name)
+
+        # Чтение текста
+        if file_name.endswith(".docx"):
+            text = extract_text_from_docx(tf.name)
+        elif file_name.endswith(".pdf"):
+            text = extract_text_from_pdf(tf.name)
+        else:
+            await update.message.reply_text("Пожалуйста, отправьте .docx или .pdf файл.")
+            return
+
+    logger.info("Файл получен. Показываем категории.")
+
+    # Сохраняем текст во временном хранилище
+    user_context[update.message.from_user.id] = {"brief": text}
+
+    keyboard = [
+        [
+            InlineKeyboardButton("Видеоролик", callback_data="video"),
+            InlineKeyboardButton("360-кампания", callback_data="360"),
+        ],
+        [
+            InlineKeyboardButton("Креативный сиддинг", callback_data="seeding"),
+            InlineKeyboardButton("Ивент", callback_data="event"),
+        ]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Выбери формат идеи:", reply_markup=reply_markup)
+
+# обработка выбора категории
+async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    if user_id not in user_context or "brief" not in user_context[user_id]:
+        await query.edit_message_text("Сначала отправьте бриф.")
+        return
+
+    category = query.data
+    user_context[user_id]["category"] = category
+
+    await query.edit_message_text("Генерирую идеи, подождите немного...")
+
+    brief = user_context[user_id]["brief"]
+    category = user_context[user_id]["category"]
+
+    ideas = await generate_ideas(brief, category)
+
+    await context.bot.send_message(chat_id=query.message.chat_id, text=ideas)
+
+# генерация идей
+async def generate_ideas(text, category):
+    prompt = (
         f"Ты креативщик. Придумай 5 уникальных идей по следующему брифу. "
         f"Формат каждой идеи:\n\n"
         f"1) Название идеи\n"
@@ -41,15 +105,51 @@ def build_prompt(text, category):
         f"   5.2) Если это 360-кампания – предложи раскладку по каналам\n"
         f"   5.3) Если это креативный сиддинг – предложи механику\n"
         f"   5.4) Если это ивент – предложи реализацию\n\n"
-        f"Категория: {category}\n\n"
+        f"Тип идеи: {category}\n"
         f"Бриф:\n{text}"
     )
 
-# --- Извлечение текста ---
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Ошибка GPT: {e}")
+        return "Произошла ошибка при генерации идей 😔"
+
+# текстовые сообщения — докрутка
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    message = update.message.text
+
+    if user_id not in user_context:
+        await update.message.reply_text("Сначала отправьте бриф в виде .docx или .pdf.")
+        return
+
+    messages = [
+        {"role": "system", "content": "Ты креативщик. Помоги докрутить идею."},
+        {"role": "user", "content": message}
+    ]
+
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4",
+            messages=messages
+        )
+        answer = completion.choices[0].message.content.strip()
+        await update.message.reply_text(answer)
+    except Exception as e:
+        logger.error(f"Ошибка GPT: {e}")
+        await update.message.reply_text("Произошла ошибка при общении с GPT.")
+
+# извлечение текста из docx
 def extract_text_from_docx(path):
     doc = Document(path)
     return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
 
+# извлечение текста из pdf
 def extract_text_from_pdf(path):
     text = ""
     with pdfplumber.open(path) as pdf:
@@ -57,89 +157,7 @@ def extract_text_from_pdf(path):
             text += page.extract_text() or ""
     return text
 
-# --- Обработка документа ---
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = update.message.document
-    file_name = file.file_name.lower()
-
-    with tempfile.NamedTemporaryFile(delete=False) as tf:
-        new_file = await context.bot.get_file(file.file_id)
-        await new_file.download_to_drive(custom_path=tf.name)
-
-        if file_name.endswith(".docx"):
-            text = extract_text_from_docx(tf.name)
-        elif file_name.endswith(".pdf"):
-            text = extract_text_from_pdf(tf.name)
-        else:
-            await update.message.reply_text("Пожалуйста, отправьте .docx или .pdf файл.")
-            return
-
-    context.user_data["brief_text"] = text
-    context.user_data["history"] = []
-
-    logger.info("Файл получен, просим выбрать категорию.")
-    buttons = [
-        [InlineKeyboardButton(text, callback_data=data)]
-        for text, data in CATEGORY_OPTIONS
-    ]
-    await update.message.reply_text(
-        "Выберите формат идеи:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-# --- Обработка выбора категории ---
-async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    category = query.data
-    brief = context.user_data.get("brief_text")
-
-    if not brief:
-        await query.edit_message_text("Бриф не найден.")
-        return
-
-    prompt = build_prompt(brief, category)
-    context.user_data["history"] = [{"role": "user", "content": prompt}]
-
-    await query.edit_message_text("Генерирую идеи... ⏳")
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=context.user_data["history"]
-        )
-        content = response.choices[0].message.content
-        context.user_data["history"].append({"role": "assistant", "content": content})
-
-        await query.message.reply_text(content)
-    except Exception as e:
-        logger.error(f"GPT ошибка: {e}")
-        await query.message.reply_text("Произошла ошибка при генерации идей.")
-
-# --- Диалог ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "history" not in context.user_data:
-        await update.message.reply_text("Сначала отправьте бриф в .docx или .pdf формате.")
-        return
-
-    user_input = update.message.text
-    context.user_data["history"].append({"role": "user", "content": user_input})
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=context.user_data["history"]
-        )
-        content = response.choices[0].message.content
-        context.user_data["history"].append({"role": "assistant", "content": content})
-
-        await update.message.reply_text(content)
-    except Exception as e:
-        logger.error(f"GPT ошибка в диалоге: {e}")
-        await update.message.reply_text("Ошибка при обращении к GPT.")
-
-# --- Старт ---
+# запуск
 if __name__ == "__main__":
     import asyncio
 
@@ -147,6 +165,7 @@ if __name__ == "__main__":
         TOKEN = os.environ["BOT_TOKEN"]
         app = ApplicationBuilder().token(TOKEN).build()
 
+        app.add_handler(CommandHandler("start", start))  # ✅ старт
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(CallbackQueryHandler(handle_category_selection))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
