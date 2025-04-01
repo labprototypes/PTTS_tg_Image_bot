@@ -9,7 +9,7 @@ import atexit
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab import pdfmetrics
+from reportlab.pdfbase import pdfmetrics  # Правильный импорт pdfmetrics
 
 # Создаём файл-замок, если бот уже запущен — выходим
 lock_file = "/tmp/bot.lock"
