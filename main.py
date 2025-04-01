@@ -1,7 +1,6 @@
 import logging
 import os
 import tempfile
-import sys
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -15,26 +14,30 @@ from docx import Document
 import pdfplumber
 from openai import OpenAI
 
+# Логгер
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
+active = True  # Флаг работы бота
 
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_states[user_id] = {"stage": "waiting_file"}
-    await update.message.reply_text("Привет! Пришли мне .docx или .pdf файл с брифом.")
+    await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
 
 # /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Бот завершает работу.")
-    logger.info("Остановка по команде /stop")
-    sys.exit(0)
+    global active
+    active = False
+    await update.message.reply_text("Бот остановлен. Чтобы запустить снова, воспользуйся /start")
 
-# Документ
+# Получение документа
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active
+    if not active:
+        return
+
     user_id = update.effective_user.id
     user_states[user_id] = {"stage": "waiting_category"}
 
@@ -71,8 +74,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# Выбор категории
+# Обработка выбора категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active
+    if not active:
+        return
+
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -84,23 +91,21 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         await query.edit_message_text("Напиши, что ты хочешь получить от GPT по брифу.")
         return
 
-    # Сообщение "Принято, в работе..."
-    await context.bot.send_message(chat_id=user_id, text="📥 Принято, в работе...")
+    await query.edit_message_text("Принято, в работе…")
 
     prompt = build_prompt(user_states[user_id]["text"], data)
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o",
             messages=[{"role": "user", "content": prompt}]
         )
         ideas = response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"GPT ошибка: {e}")
-        await query.edit_message_text("Ошибка при генерации идей.")
+        await context.bot.send_message(chat_id=user_id, text="Ошибка при генерации идей.")
         return
 
-    await query.edit_message_text("Готово! Вот идеи:")
     await context.bot.send_message(chat_id=user_id, text=ideas)
     user_states[user_id]["history"] = [
         {"role": "user", "content": prompt},
@@ -108,15 +113,33 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
     ]
     user_states[user_id]["stage"] = "chatting"
 
-# Сообщения в диалоге
+# Обработка диалога
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active
+    if not active:
+        return
+
     user_id = update.effective_user.id
     state = user_states.get(user_id)
 
     if not state:
-        await update.message.reply_text("Сначала пришли бриф.")
+        # свободный режим общения с GPT
+        user_input = update.message.text
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": user_input}]
+            )
+            reply = response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"GPT ошибка в общем режиме: {e}")
+            await update.message.reply_text("Ошибка при обращении к GPT.")
+            return
+
+        await update.message.reply_text(reply)
         return
 
+    # пользователь в процессе работы с брифом
     if state.get("stage") == "awaiting_custom_prompt":
         user_prompt = update.message.text
         full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
@@ -127,7 +150,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o",
             messages=state["history"]
         )
         reply = response.choices[0].message.content.strip()
@@ -139,7 +162,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     state["history"].append({"role": "assistant", "content": reply})
 
-# Генерация промпта
+# Построение промпта
 def build_prompt(text, category):
     extra = ""
     if category == "video":
@@ -162,7 +185,6 @@ def build_prompt(text, category):
         f"Бриф:\n{text}"
     )
 
-# Текст из файлов
 def extract_text_from_docx(path):
     doc = Document(path)
     return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
@@ -180,7 +202,7 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))  # Новая команда
+    app.add_handler(CommandHandler("stop", stop))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(handle_category_selection))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
