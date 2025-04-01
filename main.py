@@ -1,13 +1,13 @@
 import os
 import sys
 import openai
-import fitz  # PyMuPDF
 from docx import Document
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from fpdf import FPDF
 from io import BytesIO
 import atexit
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 # Создаём файл-замок, если бот уже запущен — выходим
 lock_file = "/tmp/bot.lock"
@@ -33,6 +33,7 @@ is_active = True  # Флаг активности бота
 client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Функция для извлечения текста из PDF
+import fitz  # PyMuPDF
 def extract_text_from_pdf(file_path):
     doc = fitz.open(file_path)
     text = ""
@@ -59,30 +60,43 @@ async def generate_ideas_from_brief(brief_text: str) -> str:
     )
     return response.choices[0].message.content.strip()
 
-# PDF генерация
+# PDF генерация с использованием reportlab
 def create_pdf(ideas: str) -> BytesIO:
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
+    # Создаем объект BytesIO для записи PDF в память
+    pdf_output = BytesIO()
 
-    # Загрузка кастомного шрифта
-    font_path = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
-    pdf.add_font("TTNorms", "", font_path, uni=True)
-    pdf.set_font("TTNorms", size=12)
+    # Создаем объект canvas для генерации PDF
+    c = canvas.Canvas(pdf_output, pagesize=letter)
+    width, height = letter
+
+    # Шрифт
+    c.setFont("Helvetica", 12)
+
+    y_position = height - 40  # Начальная позиция для текста
 
     for idx, idea in enumerate(ideas.split("\n\n"), start=1):
-        pdf.set_font("TTNorms", size=16)
-        pdf.cell(0, 10, f"Idea {idx}", ln=True)
-        pdf.set_font("TTNorms", size=12)
+        # Печатаем заголовок (номер идеи и название)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(40, y_position, f"Idea {idx}")
+        y_position -= 20
+
+        # Печатаем текст идеи
+        c.setFont("Helvetica", 12)
         for line in idea.strip().split("\n"):
-            pdf.multi_cell(0, 10, line)
-        pdf.ln(5)
+            c.drawString(40, y_position, line)
+            y_position -= 14
+            if y_position < 40:  # Перенос на новую страницу
+                c.showPage()
+                c.setFont("Helvetica", 12)
+                y_position = height - 40
 
-    # Используем BytesIO для записи PDF в память
-    pdf_output = BytesIO()
-    pdf.output(name=pdf_output)  # исправленный вызов
+        # Добавляем пустую строку между идеями
+        y_position -= 20
 
-    # Возвращаем PDF в формате байтов
+    # Завершаем создание PDF
+    c.save()
+
+    # Возвращаем объект BytesIO, содержащий PDF
     pdf_output.seek(0)
     return pdf_output
 
