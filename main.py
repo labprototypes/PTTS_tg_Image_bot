@@ -5,6 +5,7 @@ from telegram import Update, InputFile
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
+    CommandHandler,
     ContextTypes,
     filters,
 )
@@ -17,12 +18,18 @@ from PIL import Image, ImageDraw, ImageFont
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Загрузка шрифта
-FONT_PATH = "TT Travels Next Trial Bold.ttf"  # Убедись, что он лежит рядом
+# Шрифт
+FONT_PATH = "TT Travels Next Trial Bold.ttf"
 FONT_SIZE = 72
 
+# GPT client
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
+# Обработка /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Отправь .docx или .pdf файл, и я сгенерирую слоган.")
+
+# Обработка документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = update.message.document
     file_name = file.file_name.lower()
@@ -31,7 +38,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_file = await context.bot.get_file(file.file_id)
         await new_file.download_to_drive(custom_path=tf.name)
 
-        # Определяем формат
         if file_name.endswith(".docx"):
             text = extract_text_from_docx(tf.name)
         elif file_name.endswith(".pdf"):
@@ -63,10 +69,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(image_path, "rb") as img_file:
         await update.message.reply_photo(photo=InputFile(img_file), caption="Ваш слоган 👆")
 
+# Текст из DOCX
 def extract_text_from_docx(path):
     doc = Document(path)
     return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
 
+# Текст из PDF
 def extract_text_from_pdf(path):
     text = ""
     with pdfplumber.open(path) as pdf:
@@ -74,6 +82,7 @@ def extract_text_from_pdf(path):
             text += page.extract_text() or ""
     return text
 
+# Генерация изображения со слоганом
 def generate_image_with_text(text):
     width, height = 1080, 1080
     image = Image.new("RGB", (width, height), "white")
@@ -103,6 +112,7 @@ def generate_image_with_text(text):
     image.save(path, "JPEG")
     return path
 
+# Точка входа
 if __name__ == "__main__":
     import asyncio
 
@@ -110,6 +120,7 @@ if __name__ == "__main__":
         TOKEN = os.environ["BOT_TOKEN"]
         app = ApplicationBuilder().token(TOKEN).build()
 
+        app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
         logger.info("Бот запускается...")
