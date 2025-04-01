@@ -33,13 +33,16 @@ user_states = {}
 active = True
 
 # Используем новый шрифт
-FONT_PATH = "/mnt/data/TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Путь к новому шрифту
+FONT_PATH = "/mnt/data/TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Путь к новому шрифтам
 LOGO_PATH = "logo.svg"
 
 # Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     active = True
+    user_id = update.effective_user.id
+    # Инициализируем состояние пользователя с пустым history
+    user_states[user_id] = {"stage": "chatting", "history": []}
     await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
