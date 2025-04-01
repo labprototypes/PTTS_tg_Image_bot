@@ -1,219 +1,91 @@
-import logging
 import os
-import tempfile
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-)
-from docx import Document
-import pdfplumber
-from openai import OpenAI
-from pathlib import Path
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+import openai
+from telegram import Update, InputFile
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from fpdf import FPDF
+from io import BytesIO
 
-# Логгер
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Загрузка API ключей из переменных окружения
+openai.api_key = os.getenv("OPENAI_API_KEY")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-user_states = {}
-active = True  # Флаг для активации/деактивации диалога
+# Состояние бота (диалог или генерация идей)
+is_generating_ideas = False
 
-FONT_PATH = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Шрифт для текста
-
-# Команды
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
-    active = True
-    await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
-
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
-    active = False
-    await update.message.reply_text("Бот остановлен. Чтобы запустить снова, воспользуйся /start")
-
-# Обработка документов
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
-    if not active:  # Останавливаем диалог, когда приходят документы
-        return
-
-    user_id = update.effective_user.id
-    user_states[user_id] = {"stage": "waiting_category"}
-
-    file = update.message.document
-    file_name = file.file_name.lower()
-
-    with tempfile.NamedTemporaryFile(delete=False) as tf:
-        new_file = await context.bot.get_file(file.file_id)
-        await new_file.download_to_drive(custom_path=tf.name)
-
-        if file_name.endswith(".docx"):
-            text = extract_text_from_docx(tf.name)
-        elif file_name.endswith(".pdf"):
-            text = extract_text_from_pdf(tf.name)
-        else:
-            await update.message.reply_text("Пожалуйста, отправьте .docx или .pdf файл.")
-            return
-
-    user_states[user_id]["text"] = text
-
-    keyboard = [
-        [
-            InlineKeyboardButton("Видеоролик", callback_data="video"),
-            InlineKeyboardButton("360-кампания", callback_data="360"),
-        ],
-        [
-            InlineKeyboardButton("Креативный сиддинг", callback_data="seeding"),
-            InlineKeyboardButton("Ивент", callback_data="event"),
-        ],
-        [InlineKeyboardButton("Свой запрос", callback_data="custom")],
-    ]
-    await update.message.reply_text(
-        "Выберите тип креатива:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+# Функция для генерации идей с использованием GPT-4o
+def generate_ideas_from_brief(brief_text: str):
+    # Используем модель gpt-4o
+    response = openai.Completion.create(
+        engine="gpt-4o",  # Указание модели gpt-4o
+        prompt=f"Based on the brief: {brief_text}\nGenerate 5 creative ideas for a project. Each idea should include:\n1) Name\n2) Intro\n3) Short description\n4) Detailed description\n5) Video script\n6) Why it's a good idea",
+        max_tokens=1500,
+        temperature=0.7
     )
+    return response.choices[0].text.strip()
 
-    active = False  # Останавливаем диалог
+# Функция для создания PDF
+def create_pdf(ideas: str):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(200, 10, txt="Creative Ideas", ln=True, align="C")
+    
+    pdf.set_font("Arial", size=12)
+    for idea_number, idea in enumerate(ideas.split("\n\n"), start=1):
+        pdf.ln(10)
+        pdf.set_font("Arial", "B", 14)
+        pdf.cell(200, 10, txt=f"Idea {idea_number}: {idea.splitlines()[0]}", ln=True)
+        pdf.set_font("Arial", size=12)
+        for line in idea.splitlines()[1:]:
+            pdf.multi_cell(0, 10, line)
+    
+    # Сохранение PDF в байтовый поток
+    pdf_output = BytesIO()
+    pdf.output(pdf_output)
+    pdf_output.seek(0)
+    return pdf_output
 
-# Выбор категории
-async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
-    if active:
-        return  # Если диалог активен, не продолжаем
+# Функция для обработки команды /start
+def start(update: Update, context: CallbackContext):
+    global is_generating_ideas
+    if not is_generating_ideas:
+        update.message.reply_text("Hello! Send me a brief in PDF or DOC format to generate creative ideas.")
+    else:
+        update.message.reply_text("Please wait, I am generating ideas. Once done, you can continue chatting.")
 
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    data = query.data
-    user_states[user_id]["category"] = data
+# Функция для обработки отправленных файлов
+def handle_document(update: Update, context: CallbackContext):
+    global is_generating_ideas
+    if not is_generating_ideas:
+        is_generating_ideas = True
+        file = update.message.document.get_file()
+        file.download("brief.pdf")
 
-    if data == "custom":
-        user_states[user_id]["stage"] = "awaiting_custom_prompt"
-        await query.edit_message_text("Напиши, что ты хочешь получить от GPT по брифу.")
-        return
+        # Обработка PDF файла и извлечение текста (можно использовать библиотеки для обработки PDF, как PyPDF2 или pdfminer)
+        brief_text = "Extracted text from PDF brief (or DOC)"
+        
+        ideas = generate_ideas_from_brief(brief_text)
+        pdf_file = create_pdf(ideas)
+        
+        # Отправка PDF в чат
+        update.message.reply_document(document=InputFile(pdf_file, filename="creative_ideas.pdf"))
+        
+        is_generating_ideas = False
+        update.message.reply_text("Here are the generated ideas! You can continue chatting with me.")
+    else:
+        update.message.reply_text("Please wait, I am still processing the last request.")
 
-    await query.edit_message_text("Принято, в работе…")
+# Настройка и запуск бота
+def main():
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+    
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.document.mime_type("application/pdf") | Filters.document.mime_type("application/msword"), handle_document))
+    
+    updater.start_polling()
+    updater.idle()
 
-    prompt = build_prompt(user_states[user_id]["text"], data)
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        ideas = response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"GPT ошибка: {e}")
-        await context.bot.send_message(chat_id=user_id, text="Ошибка при генерации идей.")
-        return
-
-    pdf_path = generate_pdf(ideas)
-    await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
-
-    active = True  # Включаем диалог снова после отправки пдф
-
-# Чат-режим
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
-    if not active:  # Если диалог не активен, ничего не делаем
-        return
-
-    user_id = update.effective_user.id
-    user_input = update.message.text
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": user_input}]
-        )
-        reply = response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"GPT ошибка в диалоге: {e}")
-        await update.message.reply_text("Ошибка при обращении к GPT.")
-        return
-
-    await update.message.reply_text(reply)
-
-# Промпт
-def build_prompt(text, category):
-    extra = ""
-    if category == "video":
-        extra = "\nДобавь раскадровку: опиши минимум 6 кадров с описанием и звуком в кадре."
-    return (
-        f"Ты креативщик. Придумай 5 уникальных идей по следующему брифу. "
-        f"Формат каждой идеи:\n\n"
-        f"1) Название идеи\n"
-        f"2) Вводная часть\n"
-        f"3) Короткое описание идеи\n"
-        f"4) Полное описание идеи\n"
-        f"5) Реализация идеи\n"
-        f"   5.1) Если это видеоролик – предложи сценарий\n"
-        f"   5.2) Если это 360-кампания – предложи раскладку по каналам\n"
-        f"   5.3) Если это креативный сиддинг – предложи механику\n"
-        f"   5.4) Если это ивент – предложи реализацию\n\n"
-        f"Каждый пункт должен быть раскрыт подробно, на 2–4 абзаца.\n"
-        f"Тип креатива: {category}\n"
-        f"{extra}\n\n"
-        f"Бриф:\n{text}"
-    )
-
-def extract_text_from_docx(path):
-    doc = Document(path)
-    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-
-def extract_text_from_pdf(path):
-    text = ""
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text() or ""
-    return text
-
-# PDF генерация
-def generate_pdf(text):
-    temp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    doc = SimpleDocTemplate(temp_pdf.name, pagesize=A4,
-                            leftMargin=40, rightMargin=40,
-                            topMargin=80, bottomMargin=40)
-
-    pdfmetrics.registerFont(TTFont("TTNorms", FONT_PATH))
-
-    style = ParagraphStyle(
-        "Custom",
-        fontName="TTNorms",
-        fontSize=12,
-        leading=18
-    )
-
-    elements = []
-    for paragraph in text.split("\n\n"):
-        elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style))
-        elements.append(Spacer(1, 12))
-
-    doc.build(elements)
-    return temp_pdf.name
-
-# Запуск
 if __name__ == "__main__":
-    TOKEN = os.environ["BOT_TOKEN"]
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    # Удаляем webhook перед запуском Polling
-    app.bot.delete_webhook()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(CallbackQueryHandler(handle_category_selection))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    logger.info("Бот запускается...")
-    app.run_polling()
+    main()
