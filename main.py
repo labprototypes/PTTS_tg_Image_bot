@@ -14,7 +14,7 @@ from docx import Document
 import pdfplumber
 from openai import OpenAI
 from pathlib import Path
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.graphics import renderPDF
@@ -128,52 +128,6 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         {"role": "assistant", "content": ideas}
     ]}
 
-# Чат-режим
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
-    if not active:
-        return
-
-    user_id = update.effective_user.id
-    state = user_states.get(user_id)
-
-    if not state:
-        user_input = update.message.text
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": user_input}]
-            )
-            reply = response.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"GPT ошибка в общем режиме: {e}")
-            await update.message.reply_text("Ошибка при обращении к GPT.")
-            return
-        await update.message.reply_text(reply)
-        return
-
-    if state.get("stage") == "awaiting_custom_prompt":
-        user_prompt = update.message.text
-        full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
-        state["history"] = [{"role": "user", "content": full_prompt}]
-        state["stage"] = "chatting"
-    else:
-        state["history"].append({"role": "user", "content": update.message.text})
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=state["history"]
-        )
-        reply = response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"GPT ошибка в диалоге: {e}")
-        await update.message.reply_text("Ошибка при обращении к GPT.")
-        return
-
-    await update.message.reply_text(reply)
-    state["history"].append({"role": "assistant", "content": reply})
-
 # Промпт
 def build_prompt(text, category):
     extra = ""
@@ -221,7 +175,7 @@ def generate_pdf(text):
     style_bold = ParagraphStyle(
         "Title",
         fontName="TTTravels",
-        fontSize=18,  # Большой размер шрифта для заголовков
+        fontSize=18,  # Заголовки
         leading=22
     )
 
@@ -253,11 +207,10 @@ def generate_pdf(text):
 
     def add_logo(canvas: Canvas, doc):
         width, height = A4
-        logo_width = width * 0.1  # Длина логотипа - 10% ширины страницы
+        logo_width = width * 0.1  # Логотип по левому краю
         logo_scale = logo_width / drawing.width
         canvas.saveState()
-        # Логотип по левому краю
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False)  # Убрали параметр scale
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
@@ -275,4 +228,4 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Бот запускается...")
-    app.run_polling(allowed_updates=[])  # Добавлено для исключения конфликта с получением обновлений
+    app.run_polling()
