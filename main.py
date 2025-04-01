@@ -32,17 +32,13 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True
 
-# Используем новый шрифт
-FONT_PATH = "/mnt/data/TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Путь к новому шрифтам
+FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
 LOGO_PATH = "logo.svg"
 
 # Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     active = True
-    user_id = update.effective_user.id
-    # Инициализируем состояние пользователя
-    user_states[user_id] = {"stage": "chatting"}
     await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -213,12 +209,11 @@ def generate_pdf(text):
                             leftMargin=40, rightMargin=40,
                             topMargin=80, bottomMargin=40)
 
-    # Регистрируем новый шрифт
-    pdfmetrics.registerFont(TTFont("TTNorms", FONT_PATH))
+    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
 
     style = ParagraphStyle(
         "Custom",
-        fontName="TTNorms",  # Используем новый шрифт
+        fontName="TTTravels",
         fontSize=12,
         leading=18
     )
@@ -232,16 +227,10 @@ def generate_pdf(text):
 
     def add_logo(canvas: Canvas, doc):
         width, height = A4
-        # Задаем конкретные размеры логотипа
-        logo_width = 170.079  # 60 мм в пунктах
-        logo_height = 85.04  # 30 мм в пунктах
-
-        # Позиция логотипа (отступы)
-        x_position = 40  # отступ от левого края
-        y_position = height - 60  # отступ от верхнего края
-
+        logo_width = width * 0.1
+        logo_scale = logo_width / drawing.width
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=x_position, y=y_position, showBoundary=False)
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
@@ -252,10 +241,11 @@ if __name__ == "__main__":
     TOKEN = os.environ["BOT_TOKEN"]
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Удаляем Webhook перед запуском Polling
-    app.bot.delete_webhook()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(CallbackQueryHandler
+    app.add_handler(CallbackQueryHandler(handle_category_selection))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    logger.info("Бот запускается...")
+    app.run_polling()
