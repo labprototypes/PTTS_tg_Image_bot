@@ -47,20 +47,20 @@ def extract_text_from_docx(file_path):
     text = "\n".join([para.text for para in doc.paragraphs])
     return text
 
-# GPT-4o генерация
+# GPT-4o генерация (обновленный запрос с 5 идеями)
 async def generate_ideas_from_brief(brief_text: str) -> str:
     response = await client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": "Ты сильный креативный директор. Генерируй креативные идеи строго по структуре."},
-            {"role": "user", "content": f"Вот бриф:\n{brief_text}\nСгенерируй 5 идей. Формат:\n1. Название (крупно)\n2. Интро\n3. Кратко\n4. Подробно\n5. Сценарий\n6. Почему идея хорошая"}
+            {"role": "user", "content": f"Вот бриф:\n{brief_text}\nСгенерируй ровно 5 идей. Формат:\n1. Название (крупно)\n2. Интро\n3. Кратко\n4. Подробно\n5. Сценарий\n6. Почему идея хорошая"}
         ],
         temperature=0.8,
         max_tokens=2500
     )
     return response.choices[0].message.content.strip()
 
-# PDF генерация с использованием reportlab
+# PDF генерация с использованием reportlab (стандартный шрифт)
 def create_pdf(ideas: str) -> BytesIO:
     # Создаем объект BytesIO для записи PDF в память
     pdf_output = BytesIO()
@@ -69,8 +69,8 @@ def create_pdf(ideas: str) -> BytesIO:
     c = canvas.Canvas(pdf_output, pagesize=letter)
     width, height = letter
 
-    # Шрифт
-    c.setFont("Helvetica", 12)
+    # Стандартный шрифт
+    c.setFont("Helvetica", 12)  # Используем стандартный шрифт Helvetica
 
     y_position = height - 40  # Начальная позиция для текста
 
