@@ -32,7 +32,8 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True
 
-FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
+# Используем новый шрифт
+FONT_PATH = "/mnt/data/TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Путь к новому шрифту
 LOGO_PATH = "logo.svg"
 
 # Команды
@@ -214,11 +215,12 @@ def generate_pdf(text):
                             leftMargin=40, rightMargin=40,
                             topMargin=80, bottomMargin=40)
 
-    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
+    # Регистрируем новый шрифт
+    pdfmetrics.registerFont(TTFont("TTNorms", FONT_PATH))
 
     style = ParagraphStyle(
         "Custom",
-        fontName="TTTravels",
+        fontName="TTNorms",  # Используем новый шрифт
         fontSize=12,
         leading=18
     )
@@ -254,9 +256,4 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(CallbackQueryHandler(handle_category_selection))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    logger.info("Бот запускается...")
-    app.run_polling()
+    app.add_handler(Message
