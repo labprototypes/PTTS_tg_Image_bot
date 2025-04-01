@@ -13,23 +13,36 @@ from docx import Document
 import pdfplumber
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Настройка логгера
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Шрифт
+# Загрузка шрифта
 FONT_PATH = "TT Travels Next Trial Bold.ttf"
 FONT_SIZE = 72
 
-# GPT client
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-# Обработка /start
+# 🔧 Фейковый HTTP-сервер для Render
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+def run_fake_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    server.serve_forever()
+
+# 🚀 Обработчик команд
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Отправь .docx или .pdf файл, и я сгенерирую слоган.")
 
-# Обработка документов
+# 📄 Обработка документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = update.message.document
     file_name = file.file_name.lower()
@@ -46,8 +59,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Пожалуйста, отправьте .docx или .pdf файл.")
             return
 
-    logger.info("Файл получен. Обращаемся к GPT...")
-
     try:
         response = client.chat.completions.create(
             model="gpt-4-1106-preview",
@@ -62,19 +73,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ошибка при обращении к GPT.")
         return
 
-    logger.info(f"GPT ответ: {slogan}")
-
     image_path = generate_image_with_text(slogan)
 
     with open(image_path, "rb") as img_file:
         await update.message.reply_photo(photo=InputFile(img_file), caption="Ваш слоган 👆")
 
-# Текст из DOCX
+# 📄 Поддержка форматов
 def extract_text_from_docx(path):
     doc = Document(path)
     return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
 
-# Текст из PDF
 def extract_text_from_pdf(path):
     text = ""
     with pdfplumber.open(path) as pdf:
@@ -82,14 +90,13 @@ def extract_text_from_pdf(path):
             text += page.extract_text() or ""
     return text
 
-# Генерация изображения со слоганом
+# 🖼️ Генерация изображения
 def generate_image_with_text(text):
     width, height = 1080, 1080
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
 
-    # Центровка
     lines = []
     words = text.split()
     line = ""
@@ -112,7 +119,7 @@ def generate_image_with_text(text):
     image.save(path, "JPEG")
     return path
 
-# Точка входа
+# ▶️ Запуск
 if __name__ == "__main__":
     import asyncio
 
@@ -130,4 +137,6 @@ if __name__ == "__main__":
         await app.start()
         await app.updater.start_polling()
 
+    # Запуск фейк-сервера и бота
+    Thread(target=run_fake_server).start()
     asyncio.run(run_bot())
