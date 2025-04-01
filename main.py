@@ -88,6 +88,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+    active = False  # Отключаем диалог после получения брифа
+
 # Выбор категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
@@ -127,6 +129,8 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": ideas}
     ]}
+
+    active = True  # Включаем диалог после отправки PDF
 
 # Чат-режим
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,7 +240,7 @@ def generate_pdf(text):
         logo_width = width * 0.1
         logo_scale = logo_width / drawing.width
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
