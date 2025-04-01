@@ -1,4 +1,5 @@
 import os
+import sys
 import openai
 import fitz  # PyMuPDF
 from docx import Document
@@ -6,6 +7,20 @@ from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from fpdf import FPDF
 from io import BytesIO
+import atexit
+
+# Создаём файл-замок, если бот уже запущен — выходим
+lock_file = "/tmp/bot.lock"
+
+if os.path.exists(lock_file):
+    print("Бот уже запущен. Завершаем процесс.")
+    sys.exit()
+
+with open(lock_file, "w") as f:
+    f.write("running")
+
+# При завершении — удалим замок
+atexit.register(lambda: os.remove(lock_file))
 
 # Загрузка API ключей из переменных окружения
 openai.api_key = os.getenv("OPENAI_API_KEY")
