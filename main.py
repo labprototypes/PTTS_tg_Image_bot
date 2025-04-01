@@ -32,7 +32,8 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True
 
-FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
+FONT_PATH_BOLD = "TT_Travels_Next_Trial_Bold.ttf"
+FONT_PATH_REGULAR = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
 LOGO_PATH = "logo.svg"
 
 # Команды
@@ -215,36 +216,44 @@ def generate_pdf(text):
                             leftMargin=40, rightMargin=40,
                             topMargin=80, bottomMargin=40)
 
-    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
-    pdfmetrics.registerFont(TTFont("NormsPro", "TT_Norms_Pro_Trial_Expanded_Medium.ttf"))
+    pdfmetrics.registerFont(TTFont("TTTravelsBold", FONT_PATH_BOLD))
+    pdfmetrics.registerFont(TTFont("TTNorms", FONT_PATH_REGULAR))
 
-    style_bold = ParagraphStyle(
+    # Заголовок
+    title_style = ParagraphStyle(
         "Title",
-        fontName="TTTravels",
-        fontSize=16,
-        leading=20
+        fontName="TTTravelsBold",
+        fontSize=18,
+        leading=22
     )
-    style_subheading = ParagraphStyle(
+
+    # Подзаголовки
+    subheading_style = ParagraphStyle(
         "Subheading",
-        fontName="TTTravels",
+        fontName="TTTravelsBold",
         fontSize=14,
         leading=18
     )
-    style_normal = ParagraphStyle(
+
+    # Обычный текст
+    normal_style = ParagraphStyle(
         "Normal",
-        fontName="NormsPro",
+        fontName="TTNorms",
         fontSize=12,
-        leading=18
+        leading=16
     )
 
     elements = []
+
+    # Перебор всех блоков текста
     for paragraph in text.split("\n\n"):
-        if paragraph.startswith("1)") or paragraph.startswith("2)") or paragraph.startswith("3)"):
-            elements.append(Paragraph(paragraph.strip(), style_bold))
-        elif paragraph.startswith("   "):
-            elements.append(Paragraph(paragraph.strip(), style_normal))
+        # Смотрим на первые строки, чтобы различать заголовки и обычный текст
+        if paragraph.startswith("Идея"):
+            elements.append(Paragraph(paragraph, title_style))
+        elif paragraph.startswith("Вводная часть") or paragraph.startswith("Короткое описание"):
+            elements.append(Paragraph(paragraph, subheading_style))
         else:
-            elements.append(Paragraph(paragraph.strip(), style_subheading))
+            elements.append(Paragraph(paragraph.strip(), normal_style))
 
         elements.append(Spacer(1, 12))
 
@@ -252,10 +261,10 @@ def generate_pdf(text):
 
     def add_logo(canvas: Canvas, doc):
         width, height = A4
-        logo_width = width * 0.1  # 10% ширины страницы
+        logo_width = width * 0.1
         logo_scale = logo_width / drawing.width
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False)
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
