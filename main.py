@@ -82,7 +82,7 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4-1106-preview",
+            model="gpt-4",
             messages=[{"role": "user", "content": prompt}]
         )
         ideas = response.choices[0].message.content.strip()
@@ -99,7 +99,7 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
     ]
     user_states[user_id]["stage"] = "chatting"
 
-# Чат с GPT или Omni
+# Чат с GPT (с защитой от дубля)
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = user_states.setdefault(user_id, {"stage": "chatting", "history": []})
@@ -112,13 +112,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         user_input = update.message.text
 
-        # Предотвращаем повтор, если вдруг Telegram вызвал дублирование
-        if not state["history"] or state["history"][-1]["content"] != user_input:
+        # Предотвращаем дублирование
+        if not state["history"] or state["history"][-1]["role"] != "user" or state["history"][-1]["content"] != user_input:
             state["history"].append({"role": "user", "content": user_input})
+        else:
+            logger.info("Повторное сообщение пользователя — пропускаем")
+            return
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4-1106-preview",
+            model="gpt-4",
             messages=state["history"]
         )
         reply = response.choices[0].message.content.strip()
@@ -173,7 +176,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(handle_category_selection))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.EDITED, handle_message))
 
     logger.info("Бот запускается...")
     app.run_polling()
