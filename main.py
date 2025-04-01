@@ -14,8 +14,7 @@ from docx import Document
 import pdfplumber
 from openai import OpenAI
 from pathlib import Path
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.pagesizes import A4
 from reportlab.graphics import renderPDF
 from svglib.svglib import svg2rlg
@@ -123,57 +122,11 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
     pdf_path = generate_pdf(ideas)
     await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
 
-    # Включаем диалог снова после отправки PDF
+    # Включаем чат-режим обратно
     user_states[user_id] = {"stage": "chatting", "history": [
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": ideas}
     ]}
-
-# Чат-режим
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active
-    if not active:
-        return
-
-    user_id = update.effective_user.id
-    state = user_states.get(user_id)
-
-    if not state:
-        user_input = update.message.text
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": user_input}]
-            )
-            reply = response.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"GPT ошибка в общем режиме: {e}")
-            await update.message.reply_text("Ошибка при обращении к GPT.")
-            return
-        await update.message.reply_text(reply)
-        return
-
-    if state.get("stage") == "awaiting_custom_prompt":
-        user_prompt = update.message.text
-        full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
-        state["history"] = [{"role": "user", "content": full_prompt}]
-        state["stage"] = "chatting"
-    else:
-        state["history"].append({"role": "user", "content": update.message.text})
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=state["history"]
-        )
-        reply = response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"GPT ошибка в диалоге: {e}")
-        await update.message.reply_text("Ошибка при обращении к GPT.")
-        return
-
-    await update.message.reply_text(reply)
-    state["history"].append({"role": "assistant", "content": reply})
 
 # Промпт
 def build_prompt(text, category):
@@ -218,39 +171,41 @@ def generate_pdf(text):
 
     pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
 
-    style_heading = ParagraphStyle(
-        "Heading",
+    # Стиль для обычного текста
+    body_style = ParagraphStyle(
+        "Body",
         fontName="TTTravels",
-        fontSize=14,
-        leading=18,
-        alignment=1,  # центрировать
-        spaceAfter=12
-    )
-
-    style_normal = ParagraphStyle(
-        "Normal",
-        fontName="TT_Norms_Pro_Trial_Expanded_Medium",
         fontSize=12,
         leading=18
     )
 
-    elements = []
+    # Стиль для заголовков
+    header_style = ParagraphStyle(
+        "Header",
+        fontName="TTTravels",
+        fontSize=16,
+        leading=24,
+        alignment=1,
+        fontName="TTTravels-Bold"
+    )
 
-    # Преобразование текста в параграфы
+    elements = []
     for paragraph in text.split("\n\n"):
+        # Заголовки и номера идей должны быть жирными и большими
         if paragraph.startswith("1)") or paragraph.startswith("2)") or paragraph.startswith("3)"):
-            elements.append(Paragraph(paragraph.strip(), style_heading))
+            elements.append(Paragraph(paragraph.strip(), header_style))
         else:
-            elements.append(Paragraph(paragraph.strip(), style_normal))
+            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), body_style))
         elements.append(Spacer(1, 12))
 
     drawing = svg2rlg(LOGO_PATH)
 
     def add_logo(canvas: Canvas, doc):
         width, height = A4
-        logo_width = width * 0.1  # ширина логотипа 10% от ширины страницы
+        logo_width = width * 0.1
+        logo_scale = logo_width / drawing.width
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, width=logo_width)
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
@@ -266,5 +221,8 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(handle_category_selection))
 
+    # Убираем обработчик MessageHandler для text, чтобы избежать конфликтов
+    # app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))  # Убираем это
+
     logger.info("Бот запускается...")
-    app.run_polling()
+    app.run_polling()  # Используем polling для получения обновлений
