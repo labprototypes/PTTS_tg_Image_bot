@@ -1,7 +1,7 @@
 import logging
 import os
 import tempfile
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -13,6 +13,9 @@ from telegram.ext import (
 from docx import Document
 import pdfplumber
 from openai import OpenAI
+from fpdf import FPDF
+from PIL import Image
+import cairosvg
 
 # Логгер
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +27,8 @@ active = True  # Флаг работы бота
 
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active
+    active = True
     await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
 
 # /stop
@@ -106,7 +111,11 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         await context.bot.send_message(chat_id=user_id, text="Ошибка при генерации идей.")
         return
 
-    await context.bot.send_message(chat_id=user_id, text=ideas)
+    # Отправка PDF
+    pdf_path = generate_pdf(ideas)
+    with open(pdf_path, "rb") as pdf_file:
+        await context.bot.send_document(chat_id=user_id, document=InputFile(pdf_file), filename="ideas.pdf")
+
     user_states[user_id]["history"] = [
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": ideas},
@@ -195,6 +204,33 @@ def extract_text_from_pdf(path):
         for page in pdf.pages:
             text += page.extract_text() or ""
     return text
+
+def generate_pdf(content):
+    pdf = FPDF()
+    pdf.add_page()
+
+    font_path = "TT_Travels_Next_Trial_Bold.ttf"
+    if os.path.exists(font_path):
+        pdf.add_font("TTTravels", "", font_path, uni=True)
+        pdf.set_font("TTTravels", size=12)
+    else:
+        pdf.set_font("Arial", size=12)
+
+    # Вставка логотипа
+    logo_svg = "logo.svg"
+    if os.path.exists(logo_svg):
+        logo_png = os.path.join(tempfile.gettempdir(), "logo.png")
+        cairosvg.svg2png(url=logo_svg, write_to=logo_png)
+        pdf.image(logo_png, x=10, y=8, w=40)
+        pdf.ln(30)
+
+    # Вставка текста
+    for line in content.split("\n"):
+        pdf.multi_cell(0, 10, txt=line)
+
+    output_path = os.path.join(tempfile.gettempdir(), "output.pdf")
+    pdf.output(output_path)
+    return output_path
 
 # Запуск
 if __name__ == "__main__":
