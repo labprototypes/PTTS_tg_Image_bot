@@ -1,5 +1,7 @@
 import os
 import openai
+import fitz  # PyMuPDF
+from docx import Document
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from fpdf import FPDF
@@ -10,10 +12,24 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 is_generating_ideas = False
+is_active = True  # Флаг, чтобы проверять, активен ли бот для общения
 
 # Асинхронный клиент для OpenAI (новая версия)
 client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Функция для извлечения текста из PDF
+def extract_text_from_pdf(file_path):
+    doc = fitz.open(file_path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    return text
+
+# Функция для извлечения текста из DOCX
+def extract_text_from_docx(file_path):
+    doc = Document(file_path)
+    text = "\n".join([para.text for para in doc.paragraphs])
+    return text
 
 # GPT-4o генерация
 async def generate_ideas_from_brief(brief_text: str) -> str:
@@ -27,7 +43,6 @@ async def generate_ideas_from_brief(brief_text: str) -> str:
         max_tokens=2500
     )
     return response.choices[0].message.content.strip()
-
 
 # PDF генерация
 def create_pdf(ideas: str) -> BytesIO:
@@ -53,19 +68,29 @@ def create_pdf(ideas: str) -> BytesIO:
     pdf_output.seek(0)
     return pdf_output
 
-
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_generating_ideas
+    global is_generating_ideas, is_active
+    if not is_active:
+        await update.message.reply_text("Бот был остановлен. Для продолжения работы отправь /start.")
+        return
     if is_generating_ideas:
         await update.message.reply_text("Сейчас я генерирую идеи. Подожди немного.")
     else:
         await update.message.reply_text("Привет! Ты можешь просто поговорить со мной, или отправь бриф в PDF/DOC — и я сгенерирую идеи.")
 
+# /stop
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global is_active
+    is_active = False
+    await update.message.reply_text("Бот остановлен. Для продолжения работы отправь /start.")
 
 # Файл-бриф
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_generating_ideas
+    global is_generating_ideas, is_active
+    if not is_active:
+        await update.message.reply_text("Бот был остановлен. Для продолжения работы отправь /start.")
+        return
     if is_generating_ideas:
         await update.message.reply_text("Подожди, я еще обрабатываю предыдущий бриф.")
         return
@@ -78,10 +103,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_path = f"/tmp/{document.file_name}"
     await file.download_to_drive(file_path)
 
-    # ⚠️ Заглушка: вставь сюда нормальную обработку PDF/DOC
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        brief_text = f.read()
+    # Определяем формат файла и извлекаем текст
+    if file_path.endswith(".pdf"):
+        brief_text = extract_text_from_pdf(file_path)
+    elif file_path.endswith(".docx"):
+        brief_text = extract_text_from_docx(file_path)
+    else:
+        await update.message.reply_text("Формат файла не поддерживается. Пожалуйста, отправьте PDF или DOCX.")
+        is_generating_ideas = False
+        return
 
+    # Генерация идей с использованием GPT-4o
     ideas = await generate_ideas_from_brief(brief_text)
     pdf_file = create_pdf(ideas)
 
@@ -90,10 +122,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     is_generating_ideas = False
 
-
 # Свободное общение с ботом (если не в процессе генерации)
 async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_generating_ideas
+    global is_generating_ideas, is_active
+    if not is_active:
+        await update.message.reply_text("Бот был остановлен. Для продолжения работы отправь /start.")
+        return
     if is_generating_ideas:
         await update.message.reply_text("Секунду, я еще думаю над идеями. Скоро вернусь!")
         return
@@ -111,17 +145,16 @@ async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = response.choices[0].message.content.strip()
     await update.message.reply_text(answer)
 
-
 # Основной запуск
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stop", stop))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), chat_mode))
 
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
