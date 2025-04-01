@@ -1,21 +1,23 @@
-import logging
 import os
+import logging
 import tempfile
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
+    ApplicationBuilder, ContextTypes, CommandHandler,
+    MessageHandler, CallbackQueryHandler, filters
 )
+from openai import OpenAI
 from docx import Document
 import pdfplumber
-from openai import OpenAI
-from fpdf import FPDF
+
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from svglib.svglib import svg2rlg
-from reportlab.graphics import renderPM
+from reportlab.graphics import renderPDF
 
 # Логгер
 logging.basicConfig(level=logging.INFO)
@@ -25,11 +27,14 @@ client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
 active = True  # Флаг работы бота
 
-# /start
+# Пути к файлам
+LOGO_PATH = "logo.svg"
+FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
+
+# Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
 
-# /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     active = False
@@ -72,12 +77,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [InlineKeyboardButton("Свой запрос", callback_data="custom")],
     ]
-    await update.message.reply_text(
-        "Выберите тип креатива:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text("Выберите тип креатива:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Обработка выбора категории
+# Выбор категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     if not active:
@@ -109,17 +111,23 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         await context.bot.send_message(chat_id=user_id, text="Ошибка при генерации идей.")
         return
 
-    pdf_path = generate_pdf(ideas)
-    await context.bot.send_document(chat_id=user_id, document=InputFile(pdf_path))
-    os.remove(pdf_path)
+    # Создание PDF
+    try:
+        pdf_path = generate_pdf(ideas)
+        with open(pdf_path, "rb") as f:
+            await context.bot.send_document(chat_id=user_id, document=f, filename="ideas.pdf")
+    except Exception as e:
+        logger.error(f"Ошибка при создании PDF: {e}")
+        await context.bot.send_message(chat_id=user_id, text="Не удалось создать PDF.")
 
+    # Возврат в режим диалога
     user_states[user_id]["history"] = [
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": ideas},
     ]
     user_states[user_id]["stage"] = "chatting"
 
-# Обработка диалога
+# Обработка сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     if not active:
@@ -129,6 +137,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_states.get(user_id)
 
     if not state:
+        # Свободный режим общения
         user_input = update.message.text
         try:
             response = client.chat.completions.create(
@@ -137,10 +146,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             reply = response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"GPT ошибка в общем режиме: {e}")
+            logger.error(f"GPT ошибка: {e}")
             await update.message.reply_text("Ошибка при обращении к GPT.")
             return
-
         await update.message.reply_text(reply)
         return
 
@@ -166,6 +174,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     state["history"].append({"role": "assistant", "content": reply})
 
+# Генерация PDF с логотипом и шрифтом
+def generate_pdf(text):
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    doc = SimpleDocTemplate(temp_file.name, pagesize=A4)
+
+    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="Custom", fontName="TTTravels", fontSize=12, leading=16))
+
+    content = []
+    for line in text.split("\n\n"):
+        content.append(Paragraph(line.replace("\n", "<br/>"), styles["Custom"]))
+        content.append(Spacer(1, 0.5 * cm))
+
+    # Вставка логотипа
+    def add_logo(canvas, doc):
+        drawing = svg2rlg(LOGO_PATH)
+        width = doc.width * 0.1  # 10% ширины
+        height = width * drawing.height / drawing.width
+        renderPDF.draw(drawing, canvas, doc.leftMargin, A4[1] - height - 1*cm)
+
+    doc.build(content, onFirstPage=add_logo, onLaterPages=add_logo)
+    return temp_file.name
+
 # Построение промпта
 def build_prompt(text, category):
     extra = ""
@@ -189,32 +221,7 @@ def build_prompt(text, category):
         f"Бриф:\n{text}"
     )
 
-# Генерация PDF
-def generate_pdf(content: str) -> str:
-    pdf = FPDF()
-    pdf.add_page()
-
-    font_path = os.path.join(os.path.dirname(__file__), "TT_Travels_Next_Trial_Bold.ttf")
-    pdf.add_font("TTTravels", "", font_path, uni=True)
-    pdf.set_font("TTTravels", size=12)
-
-    # Логотип
-    logo_svg_path = os.path.join(os.path.dirname(__file__), "logo.svg")
-    logo_png_path = os.path.join(tempfile.gettempdir(), "logo.png")
-    drawing = svg2rlg(logo_svg_path)
-    renderPM.drawToFile(drawing, logo_png_path, fmt="PNG")
-    pdf.image(logo_png_path, x=10, y=10, w=50)
-
-    pdf.ln(30)
-
-    for line in content.split("\n"):
-        pdf.multi_cell(0, 10, txt=line)
-
-    result_path = os.path.join(tempfile.gettempdir(), "ideas_output.pdf")
-    pdf.output(result_path)
-    return result_path
-
-# Извлечение текста из файлов
+# Текст из файлов
 def extract_text_from_docx(path):
     doc = Document(path)
     return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
