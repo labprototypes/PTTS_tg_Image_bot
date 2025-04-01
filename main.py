@@ -24,8 +24,8 @@ user_states = {}
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_states[user_id] = {"stage": "waiting_file"}
-    await update.message.reply_text("Привет! Пришли мне .docx или .pdf файл с брифом.")
+    user_states[user_id] = {"stage": "chatting", "history": []}
+    await update.message.reply_text("Привет! Я GPT-бот. Просто напиши, чтобы начать диалог, или пришли файл с брифом.")
 
 # Получение документа
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -82,7 +82,7 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4-0125-preview",
             messages=[{"role": "user", "content": prompt}]
         )
         ideas = response.choices[0].message.content.strip()
@@ -102,11 +102,7 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 # Чат с GPT
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    state = user_states.get(user_id)
-
-    if not state:
-        await update.message.reply_text("Сначала пришли бриф.")
-        return
+    state = user_states.setdefault(user_id, {"stage": "chatting", "history": []})
 
     if state.get("stage") == "awaiting_custom_prompt":
         user_prompt = update.message.text
@@ -118,7 +114,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4-0125-preview",
             messages=state["history"]
         )
         reply = response.choices[0].message.content.strip()
