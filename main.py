@@ -29,7 +29,6 @@ user_states = {}
 active = True
 
 FONT_PATH = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"  # Шрифт для текста
-LOGO_PATH = "logo.svg"  # Логотип (пока не используется)
 
 # Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
