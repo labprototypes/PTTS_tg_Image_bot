@@ -26,7 +26,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 # Логгер
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(name)
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
@@ -88,8 +88,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-    active = False  # Отключаем диалог после получения брифа
-
 # Выбор категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
@@ -124,13 +122,10 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 
     pdf_path = generate_pdf(ideas)
     await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
-
     user_states[user_id] = {"stage": "chatting", "history": [
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": ideas}
     ]}
-
-    active = True  # Включаем диалог после отправки PDF
 
 # Чат-режим
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -240,7 +235,7 @@ def generate_pdf(text):
         logo_width = width * 0.1
         logo_scale = logo_width / drawing.width
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False)
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
@@ -251,6 +246,9 @@ if __name__ == "__main__":
     TOKEN = os.environ["BOT_TOKEN"]
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Удаляем старый Webhook перед запуском Polling
+    app.bot.delete_webhook()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -258,4 +256,4 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Бот запускается...")
-    app.run_polling()
+    app.run_polling()  # Используем только polling
