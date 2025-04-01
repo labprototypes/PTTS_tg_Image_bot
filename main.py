@@ -1,49 +1,42 @@
 import logging
 import os
 import tempfile
-from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
-    MessageHandler,
-    CommandHandler,
-    CallbackQueryHandler,
     ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
 from docx import Document
 import pdfplumber
 from openai import OpenAI
-from PIL import Image, ImageDraw, ImageFont
 
 # Настройка логгера
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Шрифт
-FONT_PATH = "TT Travels Next Trial Bold.ttf"
-FONT_SIZE = 72
-
-# Инициализация OpenAI
+# Подключение к OpenAI
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-# Категории
-CATEGORIES = [
-    "Видеоролик",
-    "360-кампания",
-    "Креативный сиддинг",
-    "Ивент",
-    "Другое"
-]
+# Состояния пользователя
+user_states = {}
 
-# Словарь для хранения контекста пользователя
-user_context = {}
 
-# /start
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Отправь .docx или .pdf файл с брифом.")
+    user_id = update.effective_user.id
+    user_states[user_id] = {"stage": "waiting_file"}
+    await update.message.reply_text("Привет! Пришли мне .docx или .pdf файл с брифом.")
 
-# Обработка документов
+
+# Обработка входящих документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_states[user_id] = {"stage": "waiting_category"}
+
     file = update.message.document
     file_name = file.file_name.lower()
 
@@ -51,6 +44,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_file = await context.bot.get_file(file.file_id)
         await new_file.download_to_drive(custom_path=tf.name)
 
+        # Определяем формат
         if file_name.endswith(".docx"):
             text = extract_text_from_docx(tf.name)
         elif file_name.endswith(".pdf"):
@@ -59,36 +53,85 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Пожалуйста, отправьте .docx или .pdf файл.")
             return
 
-    user_id = update.effective_user.id
-    user_context[user_id] = {"brief": text}
+    user_states[user_id]["text"] = text
 
-    # Кнопки выбора категории
     keyboard = [
-        [InlineKeyboardButton(cat, callback_data=cat)] for cat in CATEGORIES
+        [
+            InlineKeyboardButton("Видеоролик", callback_data="video"),
+            InlineKeyboardButton("360-кампания", callback_data="360"),
+        ],
+        [
+            InlineKeyboardButton("Креативный сиддинг", callback_data="seeding"),
+            InlineKeyboardButton("Ивент", callback_data="event"),
+        ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выбери категорию для генерации идей:", reply_markup=reply_markup)
+    await update.message.reply_text("Выберите тип креатива:", reply_markup=reply_markup)
+
 
 # Обработка выбора категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     user_id = query.from_user.id
-    category = query.data
-    brief = user_context.get(user_id, {}).get("brief", "")
 
-    if not brief:
-        await query.edit_message_text("Бриф не найден. Пожалуйста, начни сначала.")
+    category = query.data
+    user_states[user_id]["category"] = category
+    text = user_states[user_id]["text"]
+
+    prompt = build_prompt(text, category)
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        ideas = response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Ошибка GPT: {e}")
+        await query.edit_message_text("Произошла ошибка при генерации идей.")
         return
 
-    logger.info(f"Генерируем идеи для категории: {category}")
+    await query.edit_message_text("Готово! Вот сгенерированные идеи:")
+    await context.bot.send_message(chat_id=user_id, text=ideas)
 
-    ideas = await generate_ideas(brief, category)
-    await query.edit_message_text(f"Вот идеи для категории *{category}*:\n\n{ideas}", parse_mode="Markdown")
+    # Сохраняем для продолжения диалога
+    user_states[user_id]["history"] = [
+        {"role": "user", "content": prompt},
+        {"role": "assistant", "content": ideas},
+    ]
+    user_states[user_id]["stage"] = "chatting"
 
-# Генерация идей через GPT
-async def generate_ideas(text, category):
+
+# Обработка сообщений от пользователя в режиме диалога
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    state = user_states.get(user_id)
+
+    if not state or "history" not in state:
+        await update.message.reply_text("Пришли мне сначала бриф в виде .docx или .pdf.")
+        return
+
+    user_input = update.message.text
+    state["history"].append({"role": "user", "content": user_input})
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=state["history"]
+        )
+        reply = response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Ошибка GPT в диалоге: {e}")
+        await update.message.reply_text("Ошибка при обращении к GPT.")
+        return
+
+    await update.message.reply_text(reply)
+    state["history"].append({"role": "assistant", "content": reply})
+
+
+# Генерация промпта
+def build_prompt(text, category):
     prompt = (
         f"Ты креативщик. Придумай 5 уникальных идей по следующему брифу. "
         f"Формат каждой идеи:\n\n"
@@ -101,38 +144,19 @@ async def generate_ideas(text, category):
         f"   5.2) Если это 360-кампания – предложи раскладку по каналам\n"
         f"   5.3) Если это креативный сиддинг – предложи механику\n"
         f"   5.4) Если это ивент – предложи реализацию\n\n"
-        f"Категория: {category}\n\n"
+        f"Тип креатива: {category}\n"
         f"Бриф:\n{text}"
     )
-    completion = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return completion.choices[0].message.content
+    return prompt
 
-# Обработка простого текста
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
 
-    # Для продолжения диалога
-    if user_id in user_context:
-        user_context[user_id]["last_input"] = text
-
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "Ты креативный ассистент, отвечай чётко и развёрнуто."},
-            {"role": "user", "content": text}
-        ]
-    )
-    await update.message.reply_text(response.choices[0].message.content)
-
-# Вспомогательные функции
+# Извлечение текста из DOCX
 def extract_text_from_docx(path):
     doc = Document(path)
     return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
 
+
+# Извлечение текста из PDF
 def extract_text_from_pdf(path):
     text = ""
     with pdfplumber.open(path) as pdf:
@@ -140,21 +164,16 @@ def extract_text_from_pdf(path):
             text += page.extract_text() or ""
     return text
 
-# 🔥 Главный запуск бота
+
+# Запуск бота
 if __name__ == "__main__":
-    import asyncio
+    TOKEN = os.environ["BOT_TOKEN"]
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    async def main():
-        TOKEN = os.environ["BOT_TOKEN"]
-        app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(CallbackQueryHandler(handle_category_selection))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        app.add_handler(CallbackQueryHandler(handle_category_selection))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-        logger.info("Бот запускается...")
-
-        await app.run_polling()
-
-    asyncio.run(main())
+    logger.info("Бот запускается...")
+    app.run_polling()
