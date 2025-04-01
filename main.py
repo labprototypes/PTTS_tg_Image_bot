@@ -24,12 +24,13 @@ user_states = {}
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_states[user_id] = {"stage": "chatting", "history": []}
-    await update.message.reply_text("Привет! Я готов помочь. Просто напиши вопрос или пришли бриф (.docx или .pdf).")
+    user_states[user_id] = {"stage": "waiting_file"}
+    await update.message.reply_text("Привет! Пришли мне .docx или .pdf файл с брифом.")
 
 # Получение документа
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    logger.info(f"📄 Получен документ от пользователя {user_id}")
     user_states[user_id] = {"stage": "waiting_category"}
 
     file = update.message.document
@@ -48,6 +49,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     user_states[user_id]["text"] = text
+    logger.info(f"📎 Текст успешно извлечён для {user_id} — длина: {len(text)} символов")
 
     keyboard = [
         [
@@ -61,7 +63,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Свой запрос", callback_data="custom")],
     ]
     await update.message.reply_text(
-        "Выберите тип креатива:",
+        "✅ Бриф получен! Выберите тип креатива:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -75,7 +77,7 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 
     if data == "custom":
         user_states[user_id]["stage"] = "awaiting_custom_prompt"
-        await query.edit_message_text("Напиши, что ты хочешь получить от GPT по брифу.")
+        await query.edit_message_text("✏️ Напиши, что ты хочешь получить от GPT по брифу.")
         return
 
     prompt = build_prompt(user_states[user_id]["text"], data)
@@ -88,10 +90,10 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         ideas = response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"GPT ошибка: {e}")
-        await query.edit_message_text("Ошибка при генерации идей.")
+        await query.edit_message_text("❌ Ошибка при генерации идей.")
         return
 
-    await query.edit_message_text("Готово! Вот идеи:")
+    await query.edit_message_text("✅ Готово! Вот идеи:")
     await context.bot.send_message(chat_id=user_id, text=ideas)
     user_states[user_id]["history"] = [
         {"role": "user", "content": prompt},
@@ -99,18 +101,22 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
     ]
     user_states[user_id]["stage"] = "chatting"
 
-# Обработка сообщений от пользователя
+# Чат с GPT
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    message = update.message.text
-    state = user_states.setdefault(user_id, {"stage": "chatting", "history": []})
+    state = user_states.get(user_id)
+
+    if not state:
+        await update.message.reply_text("Сначала пришли бриф.")
+        return
 
     if state.get("stage") == "awaiting_custom_prompt":
-        full_prompt = f"{message}\n\nБриф:\n{state['text']}"
+        user_prompt = update.message.text
+        full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
         state["history"] = [{"role": "user", "content": full_prompt}]
         state["stage"] = "chatting"
     else:
-        state["history"].append({"role": "user", "content": message})
+        state["history"].append({"role": "user", "content": update.message.text})
 
     try:
         response = client.chat.completions.create(
@@ -120,7 +126,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"GPT ошибка в диалоге: {e}")
-        await update.message.reply_text("Ошибка при обращении к GPT.")
+        await update.message.reply_text("❌ Ошибка при обращении к GPT.")
         return
 
     await update.message.reply_text(reply)
@@ -161,25 +167,15 @@ def extract_text_from_pdf(path):
             text += page.extract_text() or ""
     return text
 
-# Запуск бота – безопасно для Render
-import asyncio
-
+# Запуск
 if __name__ == "__main__":
-    async def main():
-        TOKEN = os.environ["BOT_TOKEN"]
-        app = ApplicationBuilder().token(TOKEN).build()
+    TOKEN = os.environ["BOT_TOKEN"]
+    app = ApplicationBuilder().token(TOKEN).build()
 
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        app.add_handler(CallbackQueryHandler(handle_category_selection))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(CallbackQueryHandler(handle_category_selection))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-        logger.info("Бот запускается...")
-
-        await app.bot.delete_webhook(drop_pending_updates=True)
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-        await app.updater.idle()
-
-    asyncio.run(main())
+    logger.info("Бот запускается...")
+    app.run_polling()
