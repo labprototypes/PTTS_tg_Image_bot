@@ -13,16 +13,16 @@ from telegram.ext import (
 from docx import Document
 import pdfplumber
 from openai import OpenAI
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.platypus.flowables import PageBreak
+from pathlib import Path
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm
+from reportlab.graphics import renderPDF
+from svglib.svglib import svg2rlg
+from reportlab.pdfgen.canvas import Canvas
+from reportlab.lib.units import inch
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from svglib.svglib import svg2rlg
-from reportlab.graphics import renderPDF
-from io import BytesIO
 
 # Логгер
 logging.basicConfig(level=logging.INFO)
@@ -30,19 +30,23 @@ logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 user_states = {}
-active = True  # Флаг работы бота
+active = True
 
-# /start
+FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
+LOGO_PATH = "logo.svg"
+
+# Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active
+    active = True
     await update.message.reply_text("Привет! Я готов к работе. Просто напиши или пришли бриф.")
 
-# /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     active = False
     await update.message.reply_text("Бот остановлен. Чтобы запустить снова, воспользуйся /start")
 
-# Получение документа
+# Обработка документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     if not active:
@@ -84,7 +88,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# Обработка выбора категории
+# Выбор категории
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     if not active:
@@ -116,19 +120,15 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         await context.bot.send_message(chat_id=user_id, text="Ошибка при генерации идей.")
         return
 
-    try:
-        pdf_path = generate_pdf(ideas)
-        await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
-    except Exception as e:
-        logger.exception("Ошибка генерации или отправки PDF")
+    pdf_path = generate_pdf(ideas)
+    await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
 
-    user_states[user_id]["history"] = [
+    user_states[user_id] = {"stage": "chatting", "history": [
         {"role": "user", "content": prompt},
-        {"role": "assistant", "content": ideas},
-    ]
-    user_states[user_id]["stage"] = "chatting"
+        {"role": "assistant", "content": ideas}
+    ]}
 
-# Обработка диалога
+# Чат-режим
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active
     if not active:
@@ -138,7 +138,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_states.get(user_id)
 
     if not state:
-        # свободный режим общения с GPT
         user_input = update.message.text
         try:
             response = client.chat.completions.create(
@@ -150,11 +149,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"GPT ошибка в общем режиме: {e}")
             await update.message.reply_text("Ошибка при обращении к GPT.")
             return
-
         await update.message.reply_text(reply)
         return
 
-    # пользователь в процессе работы с брифом
     if state.get("stage") == "awaiting_custom_prompt":
         user_prompt = update.message.text
         full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
@@ -177,7 +174,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     state["history"].append({"role": "assistant", "content": reply})
 
-# Построение промпта
+# Промпт
 def build_prompt(text, category):
     extra = ""
     if category == "video":
@@ -200,53 +197,6 @@ def build_prompt(text, category):
         f"Бриф:\n{text}"
     )
 
-# Генерация PDF
-def generate_pdf(text: str):
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    elements = []
-
-    # Регистрация шрифта
-    font_path = "TT_Travels_Next_Trial_Bold.ttf"
-    font_name = "TravelsBold"
-    pdfmetrics.registerFont(TTFont(font_name, font_path))
-
-    # Стили
-    styles = getSampleStyleSheet()
-    custom_style = ParagraphStyle(
-        name="Custom",
-        fontName=font_name,
-        fontSize=12,
-        leading=16,
-    )
-
-    # Логотип
-    logo_path = "logo.svg"
-    drawing = svg2rlg(logo_path)
-
-    def draw_logo(canvas, doc):
-        page_width, page_height = A4
-        logo_width = page_width * 0.1
-        scale = logo_width / drawing.width
-        canvas.saveState()
-        canvas.translate(cm, page_height - drawing.height * scale - cm)
-        canvas.scale(scale, scale)
-        renderPDF.draw(drawing, canvas, 0, 0)
-        canvas.restoreState()
-
-    # Добавление текста
-    for para in text.split("\n\n"):
-        elements.append(Paragraph(para.strip(), custom_style))
-        elements.append(Spacer(1, 12))
-
-    doc.build(elements, onFirstPage=draw_logo, onLaterPages=draw_logo)
-
-    tmp_path = os.path.join(tempfile.gettempdir(), "ideas_output.pdf")
-    with open(tmp_path, "wb") as f:
-        f.write(buffer.getvalue())
-
-    return tmp_path
-
 def extract_text_from_docx(path):
     doc = Document(path)
     return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
@@ -257,6 +207,40 @@ def extract_text_from_pdf(path):
         for page in pdf.pages:
             text += page.extract_text() or ""
     return text
+
+# PDF генерация
+def generate_pdf(text):
+    temp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    doc = SimpleDocTemplate(temp_pdf.name, pagesize=A4,
+                            leftMargin=40, rightMargin=40,
+                            topMargin=80, bottomMargin=40)
+
+    pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
+
+    style = ParagraphStyle(
+        "Custom",
+        fontName="TTTravels",
+        fontSize=12,
+        leading=18
+    )
+
+    elements = []
+    for paragraph in text.split("\n\n"):
+        elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style))
+        elements.append(Spacer(1, 12))
+
+    drawing = svg2rlg(LOGO_PATH)
+
+    def add_logo(canvas: Canvas, doc):
+        width, height = A4
+        logo_width = width * 0.1
+        logo_scale = logo_width / drawing.width
+        canvas.saveState()
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
+        canvas.restoreState()
+
+    doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
+    return temp_pdf.name
 
 # Запуск
 if __name__ == "__main__":
