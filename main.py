@@ -1,91 +1,101 @@
 import os
 import openai
 from telegram import Update, InputFile
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from fpdf import FPDF
 from io import BytesIO
 
-# Загрузка API ключей из переменных окружения
 openai.api_key = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Состояние бота (диалог или генерация идей)
 is_generating_ideas = False
 
-# Функция для генерации идей с использованием GPT-4o
-def generate_ideas_from_brief(brief_text: str):
-    # Используем модель gpt-4o
-    response = openai.Completion.create(
-        engine="gpt-4o",  # Указание модели gpt-4o
-        prompt=f"Based on the brief: {brief_text}\nGenerate 5 creative ideas for a project. Each idea should include:\n1) Name\n2) Intro\n3) Short description\n4) Detailed description\n5) Video script\n6) Why it's a good idea",
-        max_tokens=1500,
-        temperature=0.7
-    )
-    return response.choices[0].text.strip()
 
-# Функция для создания PDF
-def create_pdf(ideas: str):
+# GPT-4o генерация
+async def generate_ideas_from_brief(brief_text: str) -> str:
+    response = openai.ChatCompletion.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "Ты сильный креативный директор. Генерируй креативные идеи строго по структуре."},
+            {"role": "user", "content": f"Вот бриф:\n{brief_text}\nСгенерируй 5 идей. Формат:\n1. Название (крупно)\n2. Интро\n3. Кратко\n4. Подробно\n5. Сценарий\n6. Почему идея хорошая"}
+        ],
+        temperature=0.8,
+        max_tokens=2500
+    )
+    return response.choices[0].message.content.strip()
+
+
+# PDF генерация
+def create_pdf(ideas: str) -> BytesIO:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(200, 10, txt="Creative Ideas", ln=True, align="C")
-    
-    pdf.set_font("Arial", size=12)
-    for idea_number, idea in enumerate(ideas.split("\n\n"), start=1):
-        pdf.ln(10)
-        pdf.set_font("Arial", "B", 14)
-        pdf.cell(200, 10, txt=f"Idea {idea_number}: {idea.splitlines()[0]}", ln=True)
-        pdf.set_font("Arial", size=12)
-        for line in idea.splitlines()[1:]:
+
+    # Загрузка кастомного шрифта
+    font_path = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
+    pdf.add_font("TTNorms", "", font_path, uni=True)
+    pdf.set_font("TTNorms", size=12)
+
+    for idx, idea in enumerate(ideas.split("\n\n"), start=1):
+        pdf.set_font("TTNorms", size=16)
+        pdf.cell(0, 10, f"Idea {idx}", ln=True)
+        pdf.set_font("TTNorms", size=12)
+        for line in idea.strip().split("\n"):
             pdf.multi_cell(0, 10, line)
-    
-    # Сохранение PDF в байтовый поток
+        pdf.ln(5)
+
     pdf_output = BytesIO()
     pdf.output(pdf_output)
     pdf_output.seek(0)
     return pdf_output
 
-# Функция для обработки команды /start
-def start(update: Update, context: CallbackContext):
+
+# /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas
-    if not is_generating_ideas:
-        update.message.reply_text("Hello! Send me a brief in PDF or DOC format to generate creative ideas.")
+    if is_generating_ideas:
+        await update.message.reply_text("Сейчас я генерирую идеи. Подожди немного.")
     else:
-        update.message.reply_text("Please wait, I am generating ideas. Once done, you can continue chatting.")
+        await update.message.reply_text("Привет! Отправь мне бриф в PDF или DOC, и я сгенерирую идеи.")
 
-# Функция для обработки отправленных файлов
-def handle_document(update: Update, context: CallbackContext):
+
+# Файл-бриф
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas
-    if not is_generating_ideas:
-        is_generating_ideas = True
-        file = update.message.document.get_file()
-        file.download("brief.pdf")
+    if is_generating_ideas:
+        await update.message.reply_text("Подожди, я ещё обрабатываю предыдущий бриф.")
+        return
 
-        # Обработка PDF файла и извлечение текста (можно использовать библиотеки для обработки PDF, как PyPDF2 или pdfminer)
-        brief_text = "Extracted text from PDF brief (or DOC)"
-        
-        ideas = generate_ideas_from_brief(brief_text)
-        pdf_file = create_pdf(ideas)
-        
-        # Отправка PDF в чат
-        update.message.reply_document(document=InputFile(pdf_file, filename="creative_ideas.pdf"))
-        
-        is_generating_ideas = False
-        update.message.reply_text("Here are the generated ideas! You can continue chatting with me.")
-    else:
-        update.message.reply_text("Please wait, I am still processing the last request.")
+    is_generating_ideas = True
+    await update.message.reply_text("Бриф получен. Читаю и думаю...")
 
-# Настройка и запуск бота
+    document = update.message.document
+    file = await document.get_file()
+    file_path = f"/tmp/{document.file_name}"
+    await file.download_to_drive(file_path)
+
+    # ⚠️ Заглушка: вставь сюда нормальную обработку PDF/DOC
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        brief_text = f.read()
+
+    ideas = await generate_ideas_from_brief(brief_text)
+    pdf_file = create_pdf(ideas)
+
+    await update.message.reply_document(document=InputFile(pdf_file, filename="ideas.pdf"))
+    await update.message.reply_text("Готово! Можем снова болтать 🙂")
+
+    is_generating_ideas = False
+
+
+# Основной запуск
 def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.document.mime_type("application/pdf") | Filters.document.mime_type("application/msword"), handle_document))
-    
-    updater.start_polling()
-    updater.idle()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+
+    app.run_polling()
+
 
 if __name__ == "__main__":
     main()
