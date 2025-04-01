@@ -33,7 +33,6 @@ user_states = {}
 active = True
 
 FONT_PATH = "TT_Travels_Next_Trial_Bold.ttf"
-NORMAL_FONT_PATH = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
 LOGO_PATH = "logo.svg"
 
 # Команды
@@ -108,9 +107,6 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
 
     await query.edit_message_text("Принято, в работе…")
 
-    # Отключаем диалог, так как мы начинаем создавать PDF
-    active = False
-
     prompt = build_prompt(user_states[user_id]["text"], data)
 
     try:
@@ -125,17 +121,59 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         return
 
     pdf_path = generate_pdf(ideas)
-
-    # Отправляем PDF и включаем диалог обратно
     await context.bot.send_document(chat_id=user_id, document=open(pdf_path, "rb"))
 
-    # Включаем диалог обратно после отправки PDF
-    active = True
-
+    # Включаем диалог снова после отправки PDF
     user_states[user_id] = {"stage": "chatting", "history": [
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": ideas}
     ]}
+
+# Чат-режим
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active
+    if not active:
+        return
+
+    user_id = update.effective_user.id
+    state = user_states.get(user_id)
+
+    if not state:
+        user_input = update.message.text
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": user_input}]
+            )
+            reply = response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"GPT ошибка в общем режиме: {e}")
+            await update.message.reply_text("Ошибка при обращении к GPT.")
+            return
+        await update.message.reply_text(reply)
+        return
+
+    if state.get("stage") == "awaiting_custom_prompt":
+        user_prompt = update.message.text
+        full_prompt = f"{user_prompt}\n\nБриф:\n{state['text']}"
+        state["history"] = [{"role": "user", "content": full_prompt}]
+        state["stage"] = "chatting"
+    else:
+        state["history"].append({"role": "user", "content": update.message.text})
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=state["history"]
+        )
+        reply = response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"GPT ошибка в диалоге: {e}")
+        await update.message.reply_text("Ошибка при обращении к GPT.")
+        return
+
+    await update.message.reply_text(reply)
+    state["history"].append({"role": "assistant", "content": reply})
 
 # Промпт
 def build_prompt(text, category):
@@ -179,40 +217,40 @@ def generate_pdf(text):
                             topMargin=80, bottomMargin=40)
 
     pdfmetrics.registerFont(TTFont("TTTravels", FONT_PATH))
-    pdfmetrics.registerFont(TTFont("TTNorms", NORMAL_FONT_PATH))
 
     style_heading = ParagraphStyle(
         "Heading",
         fontName="TTTravels",
-        fontSize=16,
-        leading=20,
-        alignment=1
+        fontSize=14,
+        leading=18,
+        alignment=1,  # центрировать
+        spaceAfter=12
     )
 
     style_normal = ParagraphStyle(
         "Normal",
-        fontName="TTNorms",
+        fontName="TT_Norms_Pro_Trial_Expanded_Medium",
         fontSize=12,
         leading=18
     )
 
     elements = []
-    # Убираем * и # и добавляем форматирование
+
+    # Преобразование текста в параграфы
     for paragraph in text.split("\n\n"):
-        if "Идея" in paragraph:
-            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style_heading))
+        if paragraph.startswith("1)") or paragraph.startswith("2)") or paragraph.startswith("3)"):
+            elements.append(Paragraph(paragraph.strip(), style_heading))
         else:
-            elements.append(Paragraph(paragraph.strip().replace("\n", "<br/>"), style_normal))
+            elements.append(Paragraph(paragraph.strip(), style_normal))
         elements.append(Spacer(1, 12))
 
     drawing = svg2rlg(LOGO_PATH)
 
     def add_logo(canvas: Canvas, doc):
         width, height = A4
-        logo_width = width * 0.1
-        logo_scale = logo_width / drawing.width
+        logo_width = width * 0.1  # ширина логотипа 10% от ширины страницы
         canvas.saveState()
-        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, scale=logo_scale)
+        renderPDF.draw(drawing, canvas, x=40, y=height - 60, showBoundary=False, width=logo_width)
         canvas.restoreState()
 
     doc.build(elements, onFirstPage=add_logo, onLaterPages=add_logo)
