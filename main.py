@@ -66,7 +66,6 @@ async def generate_ideas_from_brief(brief_text: str) -> str:
 
     return re.sub(r"[*#]+", "", response.choices[0].message.content.strip())
 
-# PDF генерация
 def create_pdf(ideas: str) -> BytesIO:
     pdf_output = BytesIO()
     c = canvas.Canvas(pdf_output, pagesize=letter)
@@ -102,44 +101,65 @@ def create_pdf(ideas: str) -> BytesIO:
             if re.match(r"^Идея \d+:", line):
                 c.setFont("CustomFont", heading_size)
                 wrapped = wrap(line, width=int(max_width / (heading_size * 0.55)))
-            # Подзаголовки
-            elif any(line.startswith(h + ":") for h in ["Интро", "Кратко", "Подробно", "Сценарий", "Почему идея хорошая"]):
-                c.setFont("CustomFont", subheading_size)
-                header, _, rest = line.partition(":")
-                wrapped = wrap(f"{header}:", width=int(max_width / (subheading_size * 0.55)))
                 for part in wrapped:
-                    if y < 50:
-                        c.showPage()
-                        y = height - 50
                     c.drawString(margin_x, y, part)
                     y -= line_height
-                c.setFont("CustomFont", font_size)
-                wrapped_text = wrap(rest.strip(), width=int(max_width / (font_size * 0.55)))
-                for part in wrapped_text:
-                    if y < 50:
-                        c.showPage()
-                        y = height - 50
-                    c.drawString(margin_x + 10, y, part)
-                    y -= line_height
+                y -= 10
                 continue
-            else:
-                c.setFont("CustomFont", font_size)
-                wrapped = wrap(line, width=int(max_width / (font_size * 0.55)))
 
+            # Подзаголовки
+            if any(line.startswith(h + ":") for h in ["Интро", "Кратко", "Подробно", "Сценарий", "Почему идея хорошая"]):
+                header, _, rest = line.partition(":")
+                c.setFont("CustomFont", subheading_size)
+                c.drawString(margin_x, y, f"{header}:")
+                y -= line_height
+
+                # Текст блока
+                c.setFont("CustomFont", font_size)
+
+                # Если это сценарий или почему идея хорошая — разбиваем на пункты
+                if header in ["Сценарий", "Почему идея хорошая"]:
+                    points = re.split(r"(?<=[.!?])\s+(?=\w)", rest.strip())
+                    for point in points:
+                        point = "– " + point.strip()
+                        wrapped_point = wrap(point, width=int(max_width / (font_size * 0.55)))
+                        for part in wrapped_point:
+                            if y < 50:
+                                c.showPage()
+                                y = height - 50
+                                c.setFont("CustomFont", font_size)
+                            c.drawString(margin_x + 10, y, part)
+                            y -= line_height
+                        y -= 4
+                else:
+                    wrapped_text = wrap(rest.strip(), width=int(max_width / (font_size * 0.55)))
+                    for part in wrapped_text:
+                        if y < 50:
+                            c.showPage()
+                            y = height - 50
+                            c.setFont("CustomFont", font_size)
+                        c.drawString(margin_x + 10, y, part)
+                        y -= line_height
+                    y -= 5
+
+                y -= 10  # Отступ после каждого блока
+                continue
+
+            # Простой текст, если остался
+            c.setFont("CustomFont", font_size)
+            wrapped = wrap(line, width=int(max_width / (font_size * 0.55)))
             for part in wrapped:
                 if y < 50:
                     c.showPage()
                     y = height - 50
                 c.drawString(margin_x, y, part)
                 y -= line_height
-
             y -= 5
 
     c.save()
     pdf_output.seek(0)
     return pdf_output
 
-# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
@@ -150,13 +170,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Привет! Можешь отправить бриф (PDF/DOCX), и я сгенерирую идеи. Или просто поболтаем 🙂")
 
-# /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_active
     is_active = False
     await update.message.reply_text("Бот остановлен. Для старта — /start")
 
-# Бриф
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
@@ -190,7 +208,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Готово ✅")
     is_generating_ideas = False
 
-# Чат
 async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
@@ -212,7 +229,6 @@ async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(response.choices[0].message.content.strip())
 
-# Запуск
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
