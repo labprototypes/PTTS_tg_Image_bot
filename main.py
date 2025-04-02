@@ -18,15 +18,11 @@ from textwrap import wrap
 import atexit
 from collections import defaultdict
 
-# === Блокировка запуска нескольких процессов ===
 lock_file = "/tmp/bot.lock"
-if os.path.exists(lock_file):
-    sys.exit()
-with open(lock_file, "w") as f:
-    f.write("locked")
+if os.path.exists(lock_file): sys.exit()
+with open(lock_file, "w") as f: f.write("locked")
 atexit.register(lambda: os.remove(lock_file))
 
-# === Настройки OpenAI и Telegram ===
 openai.api_key = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 client = openai.AsyncOpenAI()
@@ -34,17 +30,16 @@ client = openai.AsyncOpenAI()
 is_generating_ideas = False
 is_active = True
 awaiting_caption = {}
+
 brief_context = {}
 comments_context = defaultdict(list)
 
-# === Обработка документов ===
 def extract_text_from_pdf(file_path):
     return "\n".join(page.get_text() for page in fitz.open(file_path))
 
 def extract_text_from_docx(file_path):
     return "\n".join([para.text for para in Document(file_path).paragraphs])
 
-# === Генерация идей ===
 async def generate_ideas_from_brief(brief_text: str, instructions: str = "") -> str:
     prompt = (
         "Ты сильный креативный директор. Сгенерируй ровно 5 креативных идей по брифу.\n"
@@ -79,7 +74,6 @@ async def regenerate_ideas(original: str, comments: list[str], rewrite_all: bool
     )
     return re.sub(r"[*#]+", "", response.choices[0].message.content.strip())
 
-# === PDF генерация ===
 def create_pdf(ideas: str) -> BytesIO:
     pdf_output = BytesIO()
     c = canvas.Canvas(pdf_output, pagesize=letter)
@@ -118,13 +112,19 @@ def create_pdf(ideas: str) -> BytesIO:
                 c.setFont("CustomFont", subheading_size)
                 c.drawString(margin_x, y, f"{header}:")
                 y -= line_height
+
+                if header == "Почему идея хорошая":
+                    y -= 5  # отступ перед этим блоком
+
                 c.setFont("CustomFont", font_size)
                 if header in ["Сценарий", "Почему идея хорошая"]:
-                    # удаляем лишнюю нумерацию и символы
-                    points = re.findall(r"(?:\d+[.)]|[-–•])?\s*(.+?)(?=(?:\d+[.)]|[-–•])\s+|$)", rest.strip(), re.DOTALL)
-                    points = [p.strip() for p in points if p.strip()]
-                    for i, item in enumerate(points, 1):
-                        bullet = f"{i}. {item}"
+                    items = re.split(r"(?<=\d\.|\n)[\s]*", rest.strip())
+                    num = 1
+                    for item in items:
+                        item_clean = item.strip().lstrip("-–• ")
+                        if not item_clean:
+                            continue
+                        bullet = f"{num}. {item_clean}"
                         for part in wrap(bullet, width=int(max_width / (font_size * 0.55))):
                             if y < 60:
                                 c.showPage()
@@ -132,6 +132,8 @@ def create_pdf(ideas: str) -> BytesIO:
                                 c.setFont("CustomFont", font_size)
                             c.drawString(margin_x + 10, y, part)
                             y -= line_height
+                        num += 1
+                    y -= 10  # удалим лишнюю строку ниже
                 else:
                     for part in wrap(rest.strip(), width=int(max_width / (font_size * 0.55))):
                         if y < 60:
@@ -140,7 +142,6 @@ def create_pdf(ideas: str) -> BytesIO:
                             c.setFont("CustomFont", font_size)
                         c.drawString(margin_x + 10, y, part)
                         y -= line_height
-                y -= 10
                 continue
 
             for part in wrap(line, width=int(max_width / (font_size * 0.55))):
@@ -156,11 +157,11 @@ def create_pdf(ideas: str) -> BytesIO:
     pdf_output.seek(0)
     return pdf_output
 
-# === Telegram-логика ===
+# ==== Telegram Logic ====
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas
-    if is_generating_ideas:
-        return
+    if is_generating_ideas: return
     is_generating_ideas = True
 
     doc = update.message.document
@@ -222,8 +223,7 @@ async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = await client.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": update.message.text}],
-        temperature=0.7,
-        max_tokens=800
+        temperature=0.7, max_tokens=800
     )
     await update.message.reply_text(response.choices[0].message.content.strip())
 
