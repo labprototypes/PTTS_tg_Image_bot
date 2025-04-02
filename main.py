@@ -31,47 +31,44 @@ client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 is_generating_ideas = False
 is_active = True
 
-# PDF → текст
 def extract_text_from_pdf(file_path):
     doc = fitz.open(file_path)
     return "\n".join(page.get_text() for page in doc)
 
-# DOCX → текст
 def extract_text_from_docx(file_path):
     doc = Document(file_path)
     return "\n".join([para.text for para in doc.paragraphs])
 
-# Генерация идей
+# 🔥 Расширенный промпт: больше контента, больше глубины
 async def generate_ideas_from_brief(brief_text: str) -> str:
     prompt = (
-        "Ты сильный креативный директор. "
-        "Твоя задача — на основе брифа сгенерировать 5 мощных, полноценных креативных идей. "
-        "Они должны быть развёрнутыми, детализированными, с ясной драматургией и аргументацией.\n\n"
-        "Формат каждой идеи:\n"
-        "1. Идея N: Название (в первой строке)\n"
-        "2. Интро — эмоциональное вступление\n"
-        "3. Кратко — одна суть/фраза\n"
-        "4. Подробно — расширенная идея (5–8 строк)\n"
-        "5. Сценарий — пошаговый план, как выглядит ролик или механика (8–10 строк)\n"
-        "6. Почему идея хорошая — аргументы с позиции бренда и потребителя\n\n"
+        "Ты выдающийся креативный директор с опытом работы в крупных агентствах. "
+        "На основе брифа сгенерируй 5 очень детализированных креативных идей. "
+        "Каждая идея должна быть оформлена строго по следующей структуре:\n\n"
+        "Идея N: Название (в одной строке)\n"
+        "Интро: Яркое вступление, эмоциональное, метафоричное (2-3 строки)\n"
+        "Кратко: Суть идеи в одной короткой фразе\n"
+        "Подробно: Расширенная идея, описанная как история или концепция (8-10 строк)\n"
+        "Сценарий: Полный сценарий видеоролика или механики, с визуальными деталями (10-12 строк)\n"
+        "Почему идея хорошая: Подробная аргументация — почему это цепляет, почему работает, как отражает бренд (5-7 строк)\n\n"
         f"Вот бриф:\n{brief_text}\n\n"
-        "Не используй символы форматирования вроде * или #. Пиши чисто и по делу. Сгенерируй ровно 5 идей."
+        "Не используй * или #, никаких markdown. Пиши чистый текст, понятный и без форматирования. Никаких подзаголовков кроме «Идея N: Название»."
     )
 
     response = await client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Ты — креативный директор."},
+            {"role": "system", "content": "Ты — креативный директор мирового уровня."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.9,
-        max_tokens=3000
+        temperature=0.95,
+        max_tokens=4000
     )
 
     cleaned = re.sub(r"[\\*#]+", "", response.choices[0].message.content.strip())
     return cleaned
 
-# PDF генерация с переносами и полями
+# 📄 Генерация PDF: новая страница для каждой идеи
 def create_pdf(ideas: str) -> BytesIO:
     pdf_output = BytesIO()
     c = canvas.Canvas(pdf_output, pagesize=letter)
@@ -80,20 +77,23 @@ def create_pdf(ideas: str) -> BytesIO:
     font_path = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
     pdfmetrics.registerFont(TTFont('CustomFont', font_path))
 
-    margin_left = 45
-    margin_right = 45
+    margin_left = 50
+    margin_right = 50
     max_line_width = width - margin_left - margin_right
     font_size = 11.5
     line_height = 15
-
     y_position = height - 50
+
     c.setFont("CustomFont", font_size)
 
-    # Идеи начинаются с "Идея N:"
     ideas_list = re.split(r"(?=\n?Идея \d+:)", ideas.strip())
 
-    for idea_block in ideas_list:
+    for idx, idea_block in enumerate(ideas_list):
+        if idx > 0:
+            c.showPage()
+            y_position = height - 50
         lines = idea_block.strip().split("\n")
+
         for line in lines:
             if re.match(r"^Идея \d+:", line):
                 c.setFont("CustomFont", 16)
@@ -109,7 +109,6 @@ def create_pdf(ideas: str) -> BytesIO:
                     c.setFont("CustomFont", font_size)
                 c.drawString(margin_left, y_position, part)
                 y_position -= line_height
-
             y_position -= 5
         y_position -= 20
 
@@ -134,14 +133,14 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_active = False
     await update.message.reply_text("Бот остановлен. Для продолжения работы отправь /start.")
 
-# Бриф-файл
+# Обработка документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
         await update.message.reply_text("Бот был остановлен. Для продолжения работы отправь /start.")
         return
     if is_generating_ideas:
-        await update.message.reply_text("Подожди, я еще обрабатываю предыдущий бриф.")
+        await update.message.reply_text("Подожди, я ещё обрабатываю предыдущий бриф.")
         return
 
     is_generating_ideas = True
@@ -168,7 +167,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Готово! Можем снова болтать 🙂")
     is_generating_ideas = False
 
-# Чат-режим
+# Чат
 async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
