@@ -39,36 +39,34 @@ def extract_text_from_docx(file_path):
     doc = Document(file_path)
     return "\n".join([para.text for para in doc.paragraphs])
 
-# 🔥 Расширенный промпт: больше контента, больше глубины
 async def generate_ideas_from_brief(brief_text: str) -> str:
     prompt = (
-        "Ты выдающийся креативный директор с опытом работы в крупных агентствах. "
-        "На основе брифа сгенерируй 5 очень детализированных креативных идей. "
-        "Каждая идея должна быть оформлена строго по следующей структуре:\n\n"
-        "Идея N: Название (в одной строке)\n"
-        "Интро: Яркое вступление, эмоциональное, метафоричное (2-3 строки)\n"
-        "Кратко: Суть идеи в одной короткой фразе\n"
-        "Подробно: Расширенная идея, описанная как история или концепция (8-10 строк)\n"
-        "Сценарий: Полный сценарий видеоролика или механики, с визуальными деталями (10-12 строк)\n"
-        "Почему идея хорошая: Подробная аргументация — почему это цепляет, почему работает, как отражает бренд (5-7 строк)\n\n"
-        f"Вот бриф:\n{brief_text}\n\n"
-        "Не используй * или #, никаких markdown. Пиши чистый текст, понятный и без форматирования. Никаких подзаголовков кроме «Идея N: Название»."
+        "Ты выдающийся креативный директор. "
+        "На основе брифа сгенерируй 5 насыщенных креативных идей.\n\n"
+        "Формат каждой:\n"
+        "Идея 1: Название\n"
+        "Интро: Вступление\n"
+        "Кратко: Суть в одной фразе\n"
+        "Подробно: Расширенная концепция\n"
+        "Сценарий: Детальный сценарий видеоролика/механики\n"
+        "Почему идея хорошая: Аргументация — бренд, аудитория, ценности\n\n"
+        "Пиши без markdown (*, #, ** и т.п.). Разделяй каждый блок с новой строки."
+        f"\n\nВот бриф:\n{brief_text}"
     )
 
     response = await client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Ты — креативный директор мирового уровня."},
+            {"role": "system", "content": "Ты креативный директор."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.95,
+        temperature=0.9,
         max_tokens=4000
     )
 
-    cleaned = re.sub(r"[\\*#]+", "", response.choices[0].message.content.strip())
-    return cleaned
+    return re.sub(r"[*#]+", "", response.choices[0].message.content.strip())
 
-# 📄 Генерация PDF: новая страница для каждой идеи
+# PDF генерация
 def create_pdf(ideas: str) -> BytesIO:
     pdf_output = BytesIO()
     c = canvas.Canvas(pdf_output, pagesize=letter)
@@ -77,40 +75,65 @@ def create_pdf(ideas: str) -> BytesIO:
     font_path = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
     pdfmetrics.registerFont(TTFont('CustomFont', font_path))
 
-    margin_left = 50
-    margin_right = 50
-    max_line_width = width - margin_left - margin_right
+    margin_x = 50
+    max_width = width - 2 * margin_x
     font_size = 11.5
+    heading_size = 16
+    subheading_size = 13
     line_height = 15
-    y_position = height - 50
+    y = height - 50
 
     c.setFont("CustomFont", font_size)
 
+    # Разделение по идеям
     ideas_list = re.split(r"(?=\n?Идея \d+:)", ideas.strip())
-
-    for idx, idea_block in enumerate(ideas_list):
+    for idx, idea in enumerate(ideas_list):
         if idx > 0:
             c.showPage()
-            y_position = height - 50
-        lines = idea_block.strip().split("\n")
+            y = height - 50
 
+        lines = idea.strip().split("\n")
         for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Заголовок идеи
             if re.match(r"^Идея \d+:", line):
-                c.setFont("CustomFont", 16)
-                wrapped = wrap(line, width=int(max_line_width / (16 * 0.55)))
+                c.setFont("CustomFont", heading_size)
+                wrapped = wrap(line, width=int(max_width / (heading_size * 0.55)))
+            # Подзаголовки
+            elif any(line.startswith(h + ":") for h in ["Интро", "Кратко", "Подробно", "Сценарий", "Почему идея хорошая"]):
+                c.setFont("CustomFont", subheading_size)
+                header, _, rest = line.partition(":")
+                wrapped = wrap(f"{header}:", width=int(max_width / (subheading_size * 0.55)))
+                for part in wrapped:
+                    if y < 50:
+                        c.showPage()
+                        y = height - 50
+                    c.drawString(margin_x, y, part)
+                    y -= line_height
+                c.setFont("CustomFont", font_size)
+                wrapped_text = wrap(rest.strip(), width=int(max_width / (font_size * 0.55)))
+                for part in wrapped_text:
+                    if y < 50:
+                        c.showPage()
+                        y = height - 50
+                    c.drawString(margin_x + 10, y, part)
+                    y -= line_height
+                continue
             else:
                 c.setFont("CustomFont", font_size)
-                wrapped = wrap(line, width=int(max_line_width / (font_size * 0.55)))
+                wrapped = wrap(line, width=int(max_width / (font_size * 0.55)))
 
             for part in wrapped:
-                if y_position < 50:
+                if y < 50:
                     c.showPage()
-                    y_position = height - 50
-                    c.setFont("CustomFont", font_size)
-                c.drawString(margin_left, y_position, part)
-                y_position -= line_height
-            y_position -= 5
-        y_position -= 20
+                    y = height - 50
+                c.drawString(margin_x, y, part)
+                y -= line_height
+
+            y -= 5
 
     c.save()
     pdf_output.seek(0)
@@ -120,31 +143,31 @@ def create_pdf(ideas: str) -> BytesIO:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
-        await update.message.reply_text("Бот был остановлен. Для продолжения работы отправь /start.")
+        await update.message.reply_text("Бот остановлен. Напиши /start для активации.")
         return
     if is_generating_ideas:
-        await update.message.reply_text("Сейчас я генерирую идеи. Подожди немного.")
+        await update.message.reply_text("Я ещё думаю над идеями. Подожди немного.")
     else:
-        await update.message.reply_text("Привет! Ты можешь просто поговорить со мной, или отправь бриф в PDF/DOC — и я сгенерирую идеи.")
+        await update.message.reply_text("Привет! Можешь отправить бриф (PDF/DOCX), и я сгенерирую идеи. Или просто поболтаем 🙂")
 
 # /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_active
     is_active = False
-    await update.message.reply_text("Бот остановлен. Для продолжения работы отправь /start.")
+    await update.message.reply_text("Бот остановлен. Для старта — /start")
 
-# Обработка документов
+# Бриф
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
-        await update.message.reply_text("Бот был остановлен. Для продолжения работы отправь /start.")
+        await update.message.reply_text("Бот остановлен. Напиши /start.")
         return
     if is_generating_ideas:
-        await update.message.reply_text("Подожди, я ещё обрабатываю предыдущий бриф.")
+        await update.message.reply_text("Я уже обрабатываю один бриф. Подожди немного.")
         return
 
     is_generating_ideas = True
-    await update.message.reply_text("Бриф получен. Читаю и думаю...")
+    await update.message.reply_text("Бриф получен. Думаю...")
 
     document = update.message.document
     file = await document.get_file()
@@ -156,7 +179,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif file_path.endswith(".docx"):
         brief_text = extract_text_from_docx(file_path)
     else:
-        await update.message.reply_text("Формат файла не поддерживается. Пожалуйста, отправьте PDF или DOCX.")
+        await update.message.reply_text("Поддерживаются только PDF и DOCX.")
         is_generating_ideas = False
         return
 
@@ -164,24 +187,24 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pdf_file = create_pdf(ideas)
 
     await update.message.reply_document(document=InputFile(pdf_file, filename="ideas.pdf"))
-    await update.message.reply_text("Готово! Можем снова болтать 🙂")
+    await update.message.reply_text("Готово ✅")
     is_generating_ideas = False
 
 # Чат
 async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas, is_active
     if not is_active:
-        await update.message.reply_text("Бот был остановлен. Для продолжения работы отправь /start.")
+        await update.message.reply_text("Бот выключен. Напиши /start.")
         return
     if is_generating_ideas:
-        await update.message.reply_text("Секунду, я еще думаю над идеями. Скоро вернусь!")
+        await update.message.reply_text("Секунду, я сейчас занят генерацией идей.")
         return
 
     user_message = update.message.text
     response = await client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Ты умный и доброжелательный ассистент, общайся в свободной форме."},
+            {"role": "system", "content": "Ты умный и дружелюбный ассистент, общайся в свободной форме."},
             {"role": "user", "content": user_message}
         ],
         temperature=0.7,
