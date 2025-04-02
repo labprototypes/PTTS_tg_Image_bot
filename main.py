@@ -1,84 +1,104 @@
 import os
 import sys
-import openai
-import fitz
-import atexit
 import re
-from io import BytesIO
+import fitz
+import openai
 from docx import Document
-from textwrap import wrap
+from io import BytesIO
 from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-from reportlab.lib.pagesizes import letter
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    ContextTypes, filters, CallbackQueryHandler
+)
 from reportlab.pdfgen import canvas
-from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.pagesizes import letter
 from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from textwrap import wrap
+import atexit
+from collections import defaultdict
 
-# Файл-замок, чтобы запускался только один процесс
+# === Блокировка запуска нескольких процессов ===
 lock_file = "/tmp/bot.lock"
 if os.path.exists(lock_file):
-    print("Бот уже запущен. Завершаем процесс.")
     sys.exit()
 with open(lock_file, "w") as f:
-    f.write("running")
+    f.write("locked")
 atexit.register(lambda: os.remove(lock_file))
 
-# API ключи
+# === Настройки OpenAI и Telegram ===
 openai.api_key = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+client = openai.AsyncOpenAI()
 
-client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 is_generating_ideas = False
 is_active = True
-pending_briefs = {}
+awaiting_caption = {}
+brief_context = {}
+comments_context = defaultdict(list)
 
-# Чтение документов
+# === Обработка документов ===
 def extract_text_from_pdf(file_path):
-    doc = fitz.open(file_path)
-    return "\n".join([page.get_text() for page in doc])
+    return "\n".join(page.get_text() for page in fitz.open(file_path))
 
 def extract_text_from_docx(file_path):
-    doc = Document(file_path)
-    return "\n".join([para.text for para in doc.paragraphs])
+    return "\n".join([para.text for para in Document(file_path).paragraphs])
 
-# Генерация идей
-async def generate_ideas(brief_text, extra_comment=None):
-    prompt = f"Вот бриф:\n{brief_text}"
-    if extra_comment:
-        prompt += f"\n\nКомментарий к брифу:\n{extra_comment}"
-    prompt += "\nСгенерируй РОВНО 5 идей. Формат:\n1. Название (крупно)\n2. Интро (2 абзаца)\n3. Кратко\n4. Подробно (2 абзаца)\n5. Сценарий (5 пунктов)\n6. Почему идея хорошая (3 пункта)"
-
+# === Генерация идей ===
+async def generate_ideas_from_brief(brief_text: str, instructions: str = "") -> str:
+    prompt = (
+        "Ты сильный креативный директор. Сгенерируй ровно 5 креативных идей по брифу.\n"
+        "Формат каждой идеи:\n"
+        "Идея 1: Название\n"
+        "Интро: минимум 2 абзаца\n"
+        "Кратко: 1 фраза\n"
+        "Подробно: минимум 2 абзаца\n"
+        "Сценарий: минимум 5 подпунктов\n"
+        "Почему идея хорошая: минимум 3 подпункта\n"
+        "Не используй * или # или лишние тире.\n\n"
+        f"Доп. вводная: {instructions}\n\nБриф:\n{brief_text}"
+    )
     response = await client.chat.completions.create(
         model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "Ты сильный креативный директор. Пиши строго по формату."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.85,
-        max_tokens=2800
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.9,
+        max_tokens=4000
     )
-    return response.choices[0].message.content.strip()
+    return re.sub(r"[*#]+", "", response.choices[0].message.content.strip())
 
-# PDF генерация
-def create_pdf(ideas_text: str) -> BytesIO:
+async def regenerate_ideas(original: str, comments: list[str], rewrite_all: bool) -> str:
+    prompt = (
+        f"{'Перегенерируй полностью' if rewrite_all else 'Улучши'} идеи с учётом:\n"
+        f"{chr(10).join(['- ' + c for c in comments])}\n\nОригинальные идеи:\n{original}"
+    )
+    response = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.9,
+        max_tokens=4000
+    )
+    return re.sub(r"[*#]+", "", response.choices[0].message.content.strip())
+
+# === PDF генерация ===
+def create_pdf(ideas: str) -> BytesIO:
     pdf_output = BytesIO()
     c = canvas.Canvas(pdf_output, pagesize=letter)
     width, height = letter
-    x_margin, y = 50, height - 50
-    max_width = width - x_margin * 2 - 10
+    margin_x = 50
+    max_width = width - 2 * margin_x - 30
+    y = height - 50
 
     font_path = "TT_Norms_Pro_Trial_Expanded_Medium.ttf"
     pdfmetrics.registerFont(TTFont("CustomFont", font_path))
     c.setFont("CustomFont", 12)
 
-    heading_size = 16
-    subheading_size = 13
-    body_size = 11.5
-    line_height = 15
+    heading_size, subheading_size, font_size, line_height = 16, 13, 11.5, 15
 
-    ideas = re.split(r"(?=Идея \d+:)", ideas_text.strip())
+    ideas_list = re.split(r"(?=\n?Идея \d+:)", ideas.strip())
+    for idx, idea in enumerate(ideas_list):
+        if idx > 0:
+            y -= 50
 
-    for idea in ideas:
         lines = idea.strip().split("\n")
         for line in lines:
             line = line.strip()
@@ -88,7 +108,7 @@ def create_pdf(ideas_text: str) -> BytesIO:
             if re.match(r"^Идея \d+:", line):
                 c.setFont("CustomFont", heading_size)
                 for part in wrap(line, width=int(max_width / (heading_size * 0.55))):
-                    c.drawString(x_margin, y, part)
+                    c.drawString(margin_x, y, part)
                     y -= line_height
                 y -= 10
                 continue
@@ -96,120 +116,124 @@ def create_pdf(ideas_text: str) -> BytesIO:
             if any(line.startswith(h + ":") for h in ["Интро", "Кратко", "Подробно", "Сценарий", "Почему идея хорошая"]):
                 header, _, rest = line.partition(":")
                 c.setFont("CustomFont", subheading_size)
-                c.drawString(x_margin, y, f"{header}:")
+                c.drawString(margin_x, y, f"{header}:")
                 y -= line_height
-                c.setFont("CustomFont", body_size)
-
-                # Обработка пунктов
+                c.setFont("CustomFont", font_size)
                 if header in ["Сценарий", "Почему идея хорошая"]:
-                    numbered = re.findall(r"\d+\.\s.+", idea)
-                    for p in numbered:
-                        wrapped = wrap(p, width=int(max_width / (body_size * 0.55)))
-                        for wline in wrapped:
-                            c.drawString(x_margin + 10, y, wline)
+                    # удаляем лишнюю нумерацию и символы
+                    points = re.findall(r"(?:\d+[.)]|[-–•])?\s*(.+?)(?=(?:\d+[.)]|[-–•])\s+|$)", rest.strip(), re.DOTALL)
+                    points = [p.strip() for p in points if p.strip()]
+                    for i, item in enumerate(points, 1):
+                        bullet = f"{i}. {item}"
+                        for part in wrap(bullet, width=int(max_width / (font_size * 0.55))):
+                            if y < 60:
+                                c.showPage()
+                                y = height - 50
+                                c.setFont("CustomFont", font_size)
+                            c.drawString(margin_x + 10, y, part)
                             y -= line_height
-                        y -= 2
                 else:
-                    for part in wrap(rest.strip(), width=int(max_width / (body_size * 0.55))):
-                        c.drawString(x_margin, y, part)
+                    for part in wrap(rest.strip(), width=int(max_width / (font_size * 0.55))):
+                        if y < 60:
+                            c.showPage()
+                            y = height - 50
+                            c.setFont("CustomFont", font_size)
+                        c.drawString(margin_x + 10, y, part)
                         y -= line_height
                 y -= 10
                 continue
 
-            # Обычный текст
-            for wrapped_line in wrap(line, width=int(max_width / (body_size * 0.55))):
-                c.drawString(x_margin, y, wrapped_line)
+            for part in wrap(line, width=int(max_width / (font_size * 0.55))):
+                if y < 60:
+                    c.showPage()
+                    y = height - 50
+                    c.setFont("CustomFont", font_size)
+                c.drawString(margin_x, y, part)
                 y -= line_height
-            y -= 4
-
-        y -= 40  # отступ между идеями
-        if y < 100:
-            c.showPage()
-            c.setFont("CustomFont", 12)
-            y = height - 50
+        y -= 20
 
     c.save()
     pdf_output.seek(0)
     return pdf_output
 
-# Telegram Handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_active
-    is_active = True
-    await update.message.reply_text("Привет! Отправь бриф в PDF или DOCX, и я предложу 5 креативных идей. Можно также добавить сопроводительное сообщение.")
-
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_active
-    is_active = False
-    await update.message.reply_text("Бот остановлен. Чтобы запустить заново, отправь /start.")
-
+# === Telegram-логика ===
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_generating_ideas, is_active
-    if not is_active or is_generating_ideas:
-        return
-
-    document = update.message.document
-    user_id = update.message.from_user.id
-    file = await document.get_file()
-    file_path = f"/tmp/{document.file_name}"
-    await file.download_to_drive(file_path)
-
-    if file_path.endswith(".pdf"):
-        brief_text = extract_text_from_pdf(file_path)
-    elif file_path.endswith(".docx"):
-        brief_text = extract_text_from_docx(file_path)
-    else:
-        await update.message.reply_text("Поддерживаются только PDF и DOCX.")
-        return
-
-    pending_briefs[user_id] = {
-        "brief": brief_text,
-        "state": "waiting_for_comment"
-    }
-
-    await update.message.reply_text("Бриф получен ✅\nДобавить сопроводительное сообщение? Напиши его сейчас или ответь 'нет'.")
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas
-    user_id = update.message.from_user.id
-    if user_id in pending_briefs:
-        entry = pending_briefs.pop(user_id)
-        brief = entry["brief"]
-        extra_comment = update.message.text.strip() if update.message.text.lower() != "нет" else None
+    if is_generating_ideas:
+        return
+    is_generating_ideas = True
 
-        await update.message.reply_text("Спасибо! Работаю над идеями 🧠💡")
-        is_generating_ideas = True
+    doc = update.message.document
+    file = await doc.get_file()
+    file_path = f"/tmp/{doc.file_name}"
+    await file.download_to_drive(file_path)
+    awaiting_caption[update.effective_chat.id] = {"file_path": file_path}
 
-        ideas = await generate_ideas(brief, extra_comment)
+    await update.message.reply_text("Бриф получен! Хочешь добавить сопроводительное сообщение?")
+    is_generating_ideas = False
+
+async def collect_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id in awaiting_caption:
+        await update.message.reply_text("Спасибо! Принял в работу, скоро пришлю идеи в PDF 😊")
+        file_path = awaiting_caption.pop(chat_id)["file_path"]
+        brief_text = extract_text_from_pdf(file_path) if file_path.endswith(".pdf") else extract_text_from_docx(file_path)
+        instructions = update.message.text.strip()
+        ideas = await generate_ideas_from_brief(brief_text, instructions)
+        brief_context[chat_id] = ideas
         pdf_file = create_pdf(ideas)
-
         await update.message.reply_document(InputFile(pdf_file, filename="ideas.pdf"))
-        await update.message.reply_text(
-            "Готово! Выберите, что делать дальше:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Принять ✅", callback_data="accept")],
-                [InlineKeyboardButton("Комментировать 💬", callback_data="comment")]
-            ])
-        )
-        is_generating_ideas = False
-    else:
-        await update.message.reply_text("Можем поговорить 🙂 Или отправь бриф, чтобы я придумал идеи.")
+        keyboard = [[
+            InlineKeyboardButton("✅ Принять", callback_data="accept"),
+            InlineKeyboardButton("💬 Комментировать", callback_data="comment")
+        ]]
+        await update.message.reply_text("Что делаем дальше?", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if "rewrite" not in context.user_data:
+        return await chat_mode(update, context)
+
+    comments_context[chat_id].append(update.message.text)
+    await update.message.reply_text("Комментарий принят. Генерирую обновлённый PDF...")
+    new_ideas = await regenerate_ideas(brief_context[chat_id], comments_context[chat_id], context.user_data["rewrite"])
+    brief_context[chat_id] = new_ideas
+    comments_context[chat_id] = []
+    context.user_data.pop("rewrite", None)
+    pdf_file = create_pdf(new_ideas)
+    await update.message.reply_document(InputFile(pdf_file, filename="ideas_updated.pdf"))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    chat_id = query.message.chat_id
     await query.answer()
     if query.data == "accept":
-        await query.edit_message_text("Отлично! Идеи приняты 🎉")
+        await query.edit_message_text("Отлично, работа принята ✅")
     elif query.data == "comment":
-        await query.edit_message_text("Окей, отправь комментарии. Напиши, хочешь доработать текущие идеи или сделать всё заново.")
+        keyboard = [[
+            InlineKeyboardButton("🛠 Доработать", callback_data="revise"),
+            InlineKeyboardButton("♻️ Заново", callback_data="rewrite")
+        ]]
+        await query.edit_message_text("Как вносим правки?", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif query.data in ["revise", "rewrite"]:
+        context.user_data["rewrite"] = (query.data == "rewrite")
+        await query.edit_message_text("Напиши свои комментарии:")
+
+async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    response = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": update.message.text}],
+        temperature=0.7,
+        max_tokens=800
+    )
+    await update.message.reply_text(response.choices[0].message.content.strip())
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Готов! Отправь бриф")))
+    app.add_handler(CommandHandler("stop", lambda u, c: u.message.reply_text("Бот остановлен")))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), collect_text))
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.run_polling()
 
 if __name__ == "__main__":
