@@ -18,18 +18,15 @@ from textwrap import wrap
 import atexit
 from collections import defaultdict
 
-# 🔐 Защита от двойного запуска
 lock_file = "/tmp/bot.lock"
 if os.path.exists(lock_file): sys.exit()
 with open(lock_file, "w") as f: f.write("locked")
 atexit.register(lambda: os.remove(lock_file))
 
-# 📦 Переменные окружения
 openai.api_key = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 client = openai.AsyncOpenAI()
 
-# ⚙️ Флаги
 is_generating_ideas = False
 is_active = True
 awaiting_caption = {}
@@ -37,26 +34,24 @@ awaiting_caption = {}
 brief_context = {}
 comments_context = defaultdict(list)
 
-# 📄 Извлечение текста
 def extract_text_from_pdf(file_path):
     return "\n".join(page.get_text() for page in fitz.open(file_path))
 
 def extract_text_from_docx(file_path):
     return "\n".join([para.text for para in Document(file_path).paragraphs])
 
-# 🤖 Генерация идей
 async def generate_ideas_from_brief(brief_text: str, instructions: str = "") -> str:
     prompt = (
         "Ты сильный креативный директор. Сгенерируй ровно 5 креативных идей по брифу.\n"
-        "Каждая идея должна быть в таком формате:\n"
+        "Формат каждой идеи:\n"
         "Идея 1: Название\n"
         "Интро: минимум 2 абзаца\n"
         "Кратко: 1 фраза\n"
         "Подробно: минимум 2 абзаца\n"
         "Сценарий: минимум 5 подпунктов\n"
         "Почему идея хорошая: минимум 3 подпункта\n"
-        "Не используй * или #.\n\n"
-        f"Вводная: {instructions}\n\nБриф:\n{brief_text}"
+        "Не используй * или # или лишние тире.\n\n"
+        f"Доп. вводная: {instructions}\n\nБриф:\n{brief_text}"
     )
     response = await client.chat.completions.create(
         model="gpt-4o",
@@ -64,7 +59,7 @@ async def generate_ideas_from_brief(brief_text: str, instructions: str = "") -> 
         temperature=0.9,
         max_tokens=4000
     )
-    return re.sub(r"[*#–]+", "", response.choices[0].message.content.strip())
+    return re.sub(r"[*#]+", "", response.choices[0].message.content.strip())
 
 async def regenerate_ideas(original: str, comments: list[str], rewrite_all: bool) -> str:
     prompt = (
@@ -77,9 +72,8 @@ async def regenerate_ideas(original: str, comments: list[str], rewrite_all: bool
         temperature=0.9,
         max_tokens=4000
     )
-    return re.sub(r"[*#–]+", "", response.choices[0].message.content.strip())
+    return re.sub(r"[*#]+", "", response.choices[0].message.content.strip())
 
-# 🧾 Генерация PDF
 def create_pdf(ideas: str) -> BytesIO:
     pdf_output = BytesIO()
     c = canvas.Canvas(pdf_output, pagesize=letter)
@@ -97,7 +91,7 @@ def create_pdf(ideas: str) -> BytesIO:
     ideas_list = re.split(r"(?=\n?Идея \d+:)", ideas.strip())
     for idx, idea in enumerate(ideas_list):
         if idx > 0:
-            y -= 40
+            y -= 50
 
         lines = idea.strip().split("\n")
         for line in lines:
@@ -120,8 +114,9 @@ def create_pdf(ideas: str) -> BytesIO:
                 y -= line_height
                 c.setFont("CustomFont", font_size)
                 if header in ["Сценарий", "Почему идея хорошая"]:
-                    for item in re.split(r"(?<=[.!?])\s+(?=\w)", rest.strip()):
-                        bullet = "– " + item.strip()
+                    for i, item in enumerate(re.split(r"(?<=[.!?])\s+(?=\w)", rest.strip()), 1):
+                        item_clean = item.strip().lstrip("-–• ")
+                        bullet = f"{i}. {item_clean}"
                         for part in wrap(bullet, width=int(max_width / (font_size * 0.55))):
                             if y < 60:
                                 c.showPage()
@@ -153,7 +148,8 @@ def create_pdf(ideas: str) -> BytesIO:
     pdf_output.seek(0)
     return pdf_output
 
-# 📎 Файл
+# ==== Telegram Logic ====
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_generating_ideas
     if is_generating_ideas: return
@@ -168,16 +164,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Бриф получен! Хочешь добавить сопроводительное сообщение?")
     is_generating_ideas = False
 
-# 💬 Сопроводительное сообщение / Комментарии
 async def collect_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id in awaiting_caption:
+        await update.message.reply_text("Спасибо! Принял в работу, скоро пришлю идеи в PDF 😊")
         file_path = awaiting_caption.pop(chat_id)["file_path"]
-        if file_path.endswith(".pdf"):
-            brief_text = extract_text_from_pdf(file_path)
-        else:
-            brief_text = extract_text_from_docx(file_path)
-        instructions = update.message.text.strip().lower()
+        brief_text = extract_text_from_pdf(file_path) if file_path.endswith(".pdf") else extract_text_from_docx(file_path)
+        instructions = update.message.text.strip()
         ideas = await generate_ideas_from_brief(brief_text, instructions)
         brief_context[chat_id] = ideas
         pdf_file = create_pdf(ideas)
@@ -201,7 +194,6 @@ async def collect_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pdf_file = create_pdf(new_ideas)
     await update.message.reply_document(InputFile(pdf_file, filename="ideas_updated.pdf"))
 
-# 🧠 Chat / Кнопки
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = query.message.chat_id
@@ -226,7 +218,6 @@ async def chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(response.choices[0].message.content.strip())
 
-# 🚀 Запуск
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Готов! Отправь бриф")))
